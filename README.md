@@ -39,6 +39,8 @@ The JSON response contains:
 | `limits` | The safety limits applied |
 | `sources` | Data sources used |
 | `fetched_at` | When the data was fetched |
+| `evidence` | Numbered sources behind the answer's [n] marks, each with a link |
+| `timings` | Seconds spent in each stage |
 | `view_url` | Opens this answer in the portal |
 
 ## How it works
@@ -62,6 +64,8 @@ question → parse (rules + SLM, JSON-schema constrained) → geocode → OSM ve
   - School, club and campus grounds are flagged.
   - Evening football, tennis and cricket need mapped floodlights.
   - Simple opening hours are respected.
+- **Satellite context:** for each place, the assistant reads ESA WorldCover land cover. Tree cover eases the heat penalty, and built-up surroundings add to it. For hikes and rides it reads Copernicus DEM elevation, which gives the climb.
+- **Every claim is cited:** answers mark facts with [n], which point to an `evidence` list. Each entry has a link that reproduces the number: the OSM feature page, the exact Open-Meteo or OSRM query, or the WorldCover or DEM tile.
 - **Advice from the data:** each "carry" and "watch for" item comes from the hours you'll actually be out, with its number ("UV up to 9", "rain chance up to 40%", "sunset 6:08 PM"). Every answer shows the place it searched around, why the hour wins, and the data used, with its fetch time.
 - **Grounding guards:** the model's summary is discarded if it contains any number or time not present in the computed facts. Safety cautions are never paraphrased. Places and profiles must come from the user's own words.
 - **Graceful input handling:** a missing activity or place gets a clarifying question. Dates like "tomorrow", "this weekend", "Saturday evening", "after work", "kal shaam" and ages ("5 year old") are understood. If no hour is safe, the assistant names the least-bad option with a clear caution.
@@ -69,7 +73,7 @@ question → parse (rules + SLM, JSON-schema constrained) → geocode → OSM ve
 
 ## Model
 
-[`Qwen/Qwen3-1.7B`](https://huggingface.co/Qwen/Qwen3-1.7B) (2.0B parameters, Apache-2.0) as an unmodified Q4_K_M GGUF, run with llama.cpp on CPU.
+[`Qwen/Qwen3-1.7B`](https://huggingface.co/Qwen/Qwen3-1.7B) (2.0B parameters, Apache-2.0), run with llama.cpp on CPU as an unmodified Q4_K_M GGUF. The model repo also holds the Transformers-format weights, so `AutoModelForCausalLM.from_pretrained("AtharvIITB/geoai-outdoor-slm")` works (verified in a clean environment).
 There's no fine-tuning; the prompts, schema and settings are in the model repo's `geoai_config.json`.
 
 ## Data sources (all free and open, fetched at query time)
@@ -81,6 +85,8 @@ There's no fine-tuning; the prompts, schema and settings are in the model repo's
 | Hourly weather, sunrise/sunset | Open-Meteo Forecast API | CC BY 4.0 |
 | Air quality (PM2.5, PM10 → India NAQI) | Open-Meteo Air Quality API (CAMS) | CC BY 4.0 |
 | Mixing height, thunderstorm code, CAPE | Open-Meteo Forecast API | CC BY 4.0 |
+| Land cover around each place (tree, green, built-up, water share within 300 m) | ESA WorldCover 10 m 2021 (Sentinel-1/2), public COG on AWS | CC BY 4.0 |
+| Elevation (climb for hikes and rides) | Copernicus DEM GLO-30, public COG on AWS | Copernicus DEM licence |
 | Map tiles in the portal | OpenFreeMap (OpenMapTiles, © OpenStreetMap contributors); MapLibre GL JS | ODbL / BSD |
 | Travel time | OSRM public demo server | OSM data, ODbL |
 

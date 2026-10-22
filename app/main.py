@@ -26,6 +26,8 @@ SOURCES = {
     "weather": "Open-Meteo Forecast API (CC BY 4.0)",
     "air_quality": "Open-Meteo Air Quality API (CAMS, CC BY 4.0); AQI on India's NAQI (CPCB) scale",
     "travel": "OSRM public routing server (OpenStreetMap data)",
+    "land_cover": "ESA WorldCover 10 m 2021 (CC BY 4.0), read from the public COG on AWS",
+    "terrain": "Copernicus DEM GLO-30 (© DLR/Airbus, Copernicus licence), read from the public COG on AWS",
 }
 HINGLISH = re.compile(r"\b(?:mein|ko|ka|ki|ke|hai|hain|kal|aaj|parso|subah|shaam|raat|dopahar|karna|jana|chahiye|"
                       r"kahan|kab|paas|liye|mujhe|hum|abhi|accha|acha|theek)\b", re.I)
@@ -90,6 +92,58 @@ def comparison_line(cmp):
             f"({_conditions(win['best'])}). {others}.")
 
 
+def build_evidence(p, origin, top):
+    """Numbered evidence for the top recommendation: each item is a source, what was read, and a link that
+    reproduces it (OSM feature pages, the exact Open-Meteo/OSRM query). Returns (items, refs by name)."""
+    items, refs = [], {}
+    if not top:
+        return items, refs
+    b, h = top[0], top[0]["best"]
+    v, day = b["venue"], h["time"][:10]
+
+    def add(name, source, what, value, url):
+        items.append({"id": len(items) + 1, "source": source, "what": what, "value": value, "url": url})
+        refs[name] = len(items)
+
+    if p.get("place"):
+        add("origin", "OpenStreetMap Nominatim", "where the search was centred", origin["name"],
+            f"https://nominatim.openstreetmap.org/search?q={quote(p['place'])}&countrycodes=in&format=jsonv2")
+    add("venue", "OpenStreetMap", "the recommended place", v["name"], f"https://www.openstreetmap.org/{v['osm']}")
+    pt = f"latitude={v['lat']:.4f}&longitude={v['lon']:.4f}"
+    add("weather", "Open-Meteo forecast", f"hourly forecast at the place, {_fmt(h['time'])}", _conditions(h).split(", AQI")[0],
+        f"https://api.open-meteo.com/v1/forecast?{pt}&hourly=apparent_temperature,precipitation_probability,"
+        f"wind_speed_10m,wind_direction_10m,uv_index,boundary_layer_height&start_date={day}&end_date={day}&timezone=Asia%2FKolkata")
+    if h.get("aqi") is not None:
+        add("air", "Open-Meteo air quality (CAMS)", f"PM2.5 and PM10 at the place, {_fmt(h['time'])}; India NAQI computed from them",
+            f"PM2.5 {_n(h['pm2_5'])} µg/m³, PM10 {_n(h['pm10'])} µg/m³ → AQI {h['aqi']} ({h['aqi_cat']})",
+            f"https://air-quality-api.open-meteo.com/v1/air-quality?{pt}&hourly=pm2_5,pm10&start_date={day}&end_date={day}"
+            f"&timezone=Asia%2FKolkata")
+    if b["travel"]:
+        add("travel", "OSRM", "driving time from the searched area", f"{b['travel']['min']} min, {b['travel']['km']} km",
+            f"https://router.project-osrm.org/route/v1/driving/{origin['lon']:.5f},{origin['lat']:.5f};{v['lon']:.5f},{v['lat']:.5f}?overview=false")
+    ctx = b["surroundings"]
+    if ctx.get("tree_pct") is not None:
+        add("land", "ESA WorldCover 10 m (2021, Sentinel-1/2)", f"land cover within {data.EO_R_M} m of the place",
+            f"{ctx['tree_pct']}% tree cover, {ctx['green_pct']}% green, {ctx['built_pct']}% built-up, {ctx['water_pct']}% water",
+            data.worldcover_url(v["lat"], v["lon"]))
+    if p["activity"] in ("hiking", "cycling") and ctx.get("elev_m") is not None and b.get("origin_elev_m") is not None:
+        add("terrain", "Copernicus DEM GLO-30", "elevation", f"{ctx['elev_m']} m at the place, {b['origin_elev_m']} m where "
+            "the search was centred", data.dem_url(v["lat"], v["lon"]))
+    named = " ".join(r for x in b["hours"] for r in x["reasons"])  # sources the reasoning mentions, at any hour
+    for src in ctx["roads"] + ctx["industry"]:
+        label = src["name"] if src["name"] == src["kind"] else f"{src['name']} ({src['kind']})"  # as the reasons say it
+        cited = f"downwind of {label}," in named or f"upwind of {label}" in named or f"near {src['name']} (mixing" in named
+        if src.get("osm") and cited and f"src:{src['osm']}" not in refs:
+            add(f"src:{src['osm']}", "OpenStreetMap", f"{src['kind']} near the place",
+                f"{src['name']}, {src['dist_m']} m away", f"https://www.openstreetmap.org/{src['osm']}")
+    return items, refs
+
+
+def _cite(refs, *names):
+    marks = "".join(f"[{refs[n]}]" for n in names if n in refs)
+    return f" {marks}" if marks else ""
+
+
 def plan_advice(p, top, avoid):
     """{carry, watch, avoid}: lists of short strings, each backed by a number from the fetched data."""
     if not top:
@@ -101,9 +155,10 @@ def plan_advice(p, top, avoid):
             "avoid": [f"{_fmt(a['time'])} ({why(a)})" for a in avoid if a["time"] != h["time"]][:3]}
 
 
-def template_answer(p, lim, origin, top, adv, cmp_line=None):
+def template_answer(p, lim, origin, top, adv, cmp_line=None, evidence=None):
     """Plain-language answer built only from evidence: verdict, where and when, why, what to carry/watch/avoid, data.
     The SLM summarises it; it's also the fallback."""
+    items, refs = evidence or ([], {})
     lines = [p["rolled"]] if p.get("rolled") else []
     if not top:
         return "\n".join(lines + [f"I couldn't find a usable hour for {lim['label']} near {_short(origin['name'])} "
@@ -119,13 +174,13 @@ def template_answer(p, lim, origin, top, adv, cmp_line=None):
                        "consider an indoor alternative or another day.")
     lines += [f"{'Least-bad' if h['blocked'] else 'Best'} option: {b['venue']['name']} ({b['venue']['dist_m'] / 1000:.1f} km away"
               + (f", ~{b['travel']['min']} min by road" if b["travel"] else "") + "), "
-              f"{_fmt(b['window'][0])} – {_hhmm(b['window'][1])}.",
-              f"Searching around {_short(origin['name'])}.",
-              f"At {_hhmm(h['time'])}: {_conditions(h)}.",
-              why_line(b)]
+              f"{_fmt(b['window'][0])} – {_hhmm(b['window'][1])}." + _cite(refs, "venue", "travel"),
+              f"Searching around {_short(origin['name'])}." + _cite(refs, "origin"),
+              f"At {_hhmm(h['time'])}: {_conditions(h)}." + _cite(refs, "weather", "air"),
+              why_line(b) + _cite(refs, "land", "terrain")]
     notes = [r for r in h["reasons"] if not r.startswith("warm")] if not h["blocked"] else []
     if notes:
-        lines.append("Note: " + "; ".join(notes) + ".")
+        lines.append("Note: " + "; ".join(notes) + "." + _cite(refs, *[k for k in refs if k.startswith("src:")]))
     for alt in top[1:]:
         lines.append(f"Alternative: {alt['venue']['name']}, {_fmt(alt['window'][0])} – {_hhmm(alt['window'][1])}"
                      + (" (also over limits)." if alt["best"]["blocked"] else "."))
@@ -134,6 +189,8 @@ def template_answer(p, lim, origin, top, adv, cmp_line=None):
             lines.append(f"{label}: " + "; ".join(adv[key]) + ".")
     lines.append(f"Data: OpenStreetMap (places, roads, industry, water, green), Open-Meteo forecast and CAMS air quality "
                  f"(AQI on India's NAQI scale), OSRM travel times; fetched {datetime.now(IST):%I:%M %p} IST.")
+    if items:
+        lines.append("Evidence: " + " ".join(f"[{e['id']}] {e['source']}: {e['value']} ({e['url']})" for e in items))
     return "\n".join(lines)
 
 
@@ -285,6 +342,7 @@ async def _answer(q: str, lat=None, lon=None):
     days = min(7, max(1, (p["end"] - datetime.now(IST).replace(tzinfo=None)).days + 2))
     tm["venues"] = time.perf_counter() - t0 - sum(tm.values())
     ctx_task = asyncio.create_task(data.surroundings(venues))  # the slow one (Overpass): ~10 s
+    eo_task = asyncio.create_task(data.earth(venues + [origin]))  # satellite land cover + DEM, alongside it
     wxs, aqs, travels = await asyncio.gather(data.weather(venues, days), data.air_quality(venues, min(days, 5)),
                                              data.travel(origin, venues))
     # Start the SLM summary now, on a ranking without surroundings, while Overpass works. It is kept only if the
@@ -299,6 +357,8 @@ async def _answer(q: str, lat=None, lon=None):
             early[1].add_done_callback(lambda t: t.cancelled() or t.exception())  # unused result: never warn
     tm["weather+air+travel"] = time.perf_counter() - t0 - sum(tm.values())
     ctxs = await ctx_task
+    eo = await eo_task
+    ctxs = [{**c, **e} for c, e in zip(ctxs, eo)]  # new dicts: the cached contexts stay as fetched
     tm["surroundings (after weather)"] = time.perf_counter() - t0 - sum(tm.values())
     top, avoid = rank(venues, wxs, aqs, ctxs, travels, lim, p["start"], p["end"], p["hour_range"])
 
@@ -312,17 +372,21 @@ async def _answer(q: str, lat=None, lon=None):
             comparison.append({"day": d, "venue": b["venue"]["name"], "window": b["window"], "best": b["best"]})
     cmp_line = comparison_line(comparison)
 
+    if top:
+        top[0]["origin_elev_m"] = eo[-1]["elev_m"]
     adv = plan_advice(p, top, avoid)
-    facts = template_answer(p, lim, origin, top, adv, cmp_line)
+    evidence = build_evidence(p, origin, top)
+    facts = template_answer(p, lim, origin, top, adv, cmp_line, evidence)
     caution = any(l.startswith("Caution") for l in facts.splitlines())
+    core = facts.split("\nEvidence:")[0]  # the writer is checked against facts, not URLs full of numbers
     slm = None
     tw = time.perf_counter()
     if top and not caution:
         if early and early[0]["venue"]["osm"] == top[0]["venue"]["osm"]:  # times are re-checked against the final facts
             out = await early[1]  # usually already done: it ran while Overpass was working
-            slm = out if out and llm.acceptable(out, facts, *_writer_targets(top[0]), q) else None
+            slm = out if out and llm.acceptable(out, core, *_writer_targets(top[0]), q) else None
         elif time.perf_counter() - t0 < WRITER_BUDGET_S:  # the ranking changed: write again if time allows
-            slm = await llm.write_answer(q, facts, *_writer_targets(top[0]))
+            slm = await llm.write_answer(q, core, *_writer_targets(top[0]))
     tm["writer wait"] = time.perf_counter() - tw
     tm["early writer"] = ("used" if early and slm and early[0]["venue"]["osm"] == top[0]["venue"]["osm"]
                           else "discarded" if early else "not started")
@@ -341,6 +405,7 @@ async def _answer(q: str, lat=None, lon=None):
         "status": "ok", "question": q,
         "answer": text, "summary": summary, "caution": caution, "writer": "slm" if slm else "template",
         "facts": facts, "searched": _short(origin["name"]), "comparison": comparison, "advice": adv,
+        "evidence": evidence[0],
         "parsed": _jsonable(p),
         "origin": origin, "radius_km": radius_km, "limits": {k: lim[k] for k in (
             "feels_max", "rain_max", "wind_max", "gust_max", "aqi_max", "uv_max", "daylight", "downwind_mult")},

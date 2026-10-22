@@ -9,8 +9,9 @@ import math
 import re
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -60,7 +61,7 @@ def main():
     base = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
     label = sys.argv[2] if len(sys.argv) > 2 else datetime.now().strftime("run-%m%d-%H%M")
     cases = {"official": OFFICIAL, "messy": MESSY}.get(sys.argv[3] if len(sys.argv) > 3 else "all", ALL)
-    today = date.today()
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()  # the app plans in IST; the server's clock is UTC
     rows = []
     out_path = Path(__file__).parent / "results" / f"{label}.jsonl"
     out_path.parent.mkdir(exist_ok=True)

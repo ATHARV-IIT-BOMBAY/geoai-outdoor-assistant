@@ -289,8 +289,10 @@ function render(res) {
     </div>
     <div class="lists">${list("Carry", res.advice.carry)}${list("Watch for", res.advice.watch)}${list("Avoid", res.advice.avoid)}</div>
     ${alts.length ? `<p class="alts">Also good: ${alts.join("; ")}.</p>` : ""}
-    <details><summary>Where this comes from</summary>
-      <ul class="sources">${Object.values(res.sources).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
+    <details><summary>Where each number comes from</summary>
+      <ol class="sources">${(res.evidence || []).map((e) => `<li>${esc(e.source)}, ${esc(e.what)}: ${esc(e.value)}.
+        <a href="${esc(e.url)}" target="_blank" rel="noopener">Check the source</a></li>`).join("")}</ol>
+      <p>All sources: ${Object.values(res.sources).map(esc).join("; ")}.</p>
       <p>Understood as: ${esc(res.parsed.activity)}${res.parsed.place ? ` near ${esc(res.parsed.place)}` : ""}${res.parsed.profiles.length ? `, ${esc(res.parsed.profiles.join(", "))}` : ""}. Written by: ${res.writer === "slm" ? "on-device small model, number-checked" : "fixed template"}.</p>
     </details>`;
   sel = { v: 0, t: b.time };

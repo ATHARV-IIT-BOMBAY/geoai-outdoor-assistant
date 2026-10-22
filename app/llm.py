@@ -134,7 +134,7 @@ async def write_answer(q: str, facts: str, venue: str = "", times=()):
     lines = facts.splitlines()
     if any(l.startswith("Caution") for l in lines):  # safety warnings stay deterministic; a 3B model once called AQI 156 "safer"
         return None
-    brief = "\n".join(l for l in lines if l.startswith(("Comparison:", "Best option", "Why:")))
+    brief = "\n".join(re.sub(r"\s*\[\d+\]", "", l) for l in lines if l.startswith(("Comparison:", "Best option", "Why:")))
     # a busy writer is skipped (the template answer is complete); never queue a request behind it
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": WRITE_PROMPT},
                                           {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}],

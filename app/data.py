@@ -2,6 +2,7 @@
 import asyncio
 import difflib
 import math
+import os
 import re
 import time
 
@@ -312,7 +313,7 @@ def _contexts(points, els):
                 d = haversine_m(p["lat"], p["lon"], best["lat"], best["lon"])
                 if d <= ROAD_R:
                     ctx["roads"].append({"name": name or t.get("ref") or f"{t['highway']} road",
-                                         "kind": t["highway"], "dist_m": round(d),
+                                         "kind": t["highway"], "dist_m": round(d), "osm": f"{el['type']}/{el['id']}",
                                          "bearing": round(bearing_deg(p["lat"], p["lon"], best["lat"], best["lon"])),
                                          "lat": best["lat"], "lon": best["lon"]})
                 continue
@@ -324,11 +325,13 @@ def _contexts(points, els):
                 if d <= INDUSTRY_R and _area_m2(el) >= MIN_INDUSTRY_M2:
                     kind = t.get("landuse") or t.get("man_made") or "power plant"
                     ctx["industry"].append({"name": name or kind, "kind": kind, "dist_m": round(d),
+                                            "osm": f"{el['type']}/{el['id']}",
                                             "bearing": round(bearing_deg(p["lat"], p["lon"], *c)),
                                             "lat": c[0], "lon": c[1]})
             elif t.get("natural") in ("water", "beach") or t.get("waterway") == "river":
                 if d <= WATER_R:
-                    ctx["water"].append({"name": name or t.get("natural") or "river", "dist_m": round(d)})
+                    ctx["water"].append({"name": name or t.get("natural") or "river", "dist_m": round(d),
+                                         "osm": f"{el['type']}/{el['id']}"})
             elif d <= GREEN_R:
                 ctx["green"] += 1
         # keep the closest few of each, deduped by name
@@ -400,3 +403,66 @@ async def travel(origin, points):
             return [None] * len(points)
 
     return await cached(f"osrm:{coords}", 3600, fetch)
+
+
+# ---------- Earth observation: ESA WorldCover 10 m (2021) and Copernicus DEM GLO-30 (public COGs, no key) ----------
+
+os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")  # don't list S3 "directories" on every open
+os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif")
+os.environ.setdefault("VSI_CACHE", "TRUE")
+WORLDCOVER = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{}_Map.tif"
+DEM = "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{0}_DEM/Copernicus_DSM_COG_10_{0}_DEM.tif"
+GREEN_CLASSES, BUILT, WATER_CLASSES = {10, 20, 30, 90, 95}, {50}, {80}
+EO_R_M = 300
+EO_TTL_S = 30 * 86400  # satellite land cover and terrain are static
+_eo_cache: dict = {}
+_eo_slots = asyncio.Semaphore(4)
+
+
+def worldcover_url(lat, lon):
+    la, lo = math.floor(lat / 3) * 3, math.floor(lon / 3) * 3  # 3x3 degree tiles named by their SW corner
+    return WORLDCOVER.format(f"{'N' if la >= 0 else 'S'}{abs(la):02d}{'E' if lo >= 0 else 'W'}{abs(lo):03d}")
+
+
+def dem_url(lat, lon):
+    la, lo = math.floor(lat), math.floor(lon)
+    return DEM.format(f"{'N' if la >= 0 else 'S'}{abs(la):02d}_00_{'E' if lo >= 0 else 'W'}{abs(lo):03d}_00")
+
+
+def _eo_sync(lat, lon):
+    """Land-cover shares within EO_R_M and elevation at the point; missing pieces are None."""
+    import numpy as np
+    import rasterio
+    from rasterio.windows import from_bounds
+    out = {"tree_pct": None, "green_pct": None, "built_pct": None, "water_pct": None, "elev_m": None}
+    try:
+        dlat, dlon = EO_R_M / 111320, EO_R_M / (111320 * math.cos(math.radians(lat)))
+        with rasterio.open(worldcover_url(lat, lon)) as ds:
+            a = ds.read(1, window=from_bounds(lon - dlon, lat - dlat, lon + dlon, lat + dlat, ds.transform))
+        a = a[a > 0]
+        if a.size:
+            share = lambda cls: round(100 * float(np.isin(a, list(cls)).mean()))
+            out.update(tree_pct=share({10}), green_pct=share(GREEN_CLASSES), built_pct=share(BUILT),
+                       water_pct=share(WATER_CLASSES))
+    except Exception as e:  # noqa: BLE001 - optional enrichment: never fail the answer
+        print("worldcover read failed:", repr(e)[:120])
+    try:
+        with rasterio.open(dem_url(lat, lon)) as ds:
+            out["elev_m"] = round(float(next(ds.sample([(lon, lat)]))[0]))
+    except Exception as e:  # noqa: BLE001
+        print("dem read failed:", repr(e)[:120])
+    return out
+
+
+async def earth(points):
+    """Satellite land cover and elevation per point (cached 30 days by rounded position)."""
+    async def one(p):
+        key = f"eo:{p['lat']:.4f},{p['lon']:.4f}"
+        hit = _eo_cache.get(key)
+        if hit and hit[0] > time.time():
+            return hit[1]
+        async with _eo_slots:
+            val = await asyncio.to_thread(_eo_sync, p["lat"], p["lon"])
+        _eo_cache[key] = (time.time() + EO_TTL_S, val)
+        return val
+    return await asyncio.gather(*(one(p) for p in points))

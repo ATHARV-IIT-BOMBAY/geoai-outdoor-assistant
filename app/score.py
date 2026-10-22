@@ -130,7 +130,14 @@ def score_hour(lim, w, aq, ctx, sun, t, travel_min, venue=None):
         blocks.append(f"feels like {feels:.0f}°C (limit {lim['feels_max']}°C)")
     elif feels > lim["feels_max"] - 6:
         heat = (feels - (lim["feels_max"] - 6)) * 3
-        if ctx.get("green", 0) >= 3 and is_day:  # shade from mapped parks/woods softens the heat
+        tree, built = ctx.get("tree_pct"), ctx.get("built_pct")
+        if tree is not None and tree >= 25 and is_day:  # satellite tree cover: shade softens the heat
+            heat *= 0.7
+            reasons.append(f"warm, feels like {feels:.0f}°C; {tree}% tree cover within 300 m gives some shade")
+        elif built is not None and built >= 70 and is_day:  # concrete all around holds heat
+            heat *= 1.15
+            reasons.append(f"warm, feels like {feels:.0f}°C; {built}% built-up surroundings hold heat")
+        elif tree is None and ctx.get("green", 0) >= 3 and is_day:  # no satellite read: mapped parks/woods
             heat *= 0.7
             reasons.append(f"warm, feels like {feels:.0f}°C; {ctx['green']} green areas within 400 m give some shade")
         else:
@@ -276,6 +283,10 @@ if __name__ == "__main__":
     assert score_hour(dlim, hot, {}, ctx, None, rush, None)[0] > score_hour(dlim, hot_dark, {}, ctx, None, rush, None)[0]
     rainy = {**nulls, "precipitation_probability": 45, "is_day": 1}
     assert score_hour(dlim, rainy, {}, ctx, None, rush, None)[0] > score_hour(dlim, {**nulls, "is_day": 0}, {}, ctx, None, rush, None)[0]
+    # W4: satellite tree cover softens heat, built-up surroundings add to it
+    warm = {**nulls, "apparent_temperature": 33, "is_day": 1}
+    shady, concrete = {**ctx, "tree_pct": 60, "built_pct": 10}, {**ctx, "tree_pct": 5, "built_pct": 85}
+    assert score_hour(lim, warm, {}, shady, None, rush, None)[0] > score_hour(lim, warm, {}, concrete, None, rush, None)[0]
     # W3: thunderstorm blocks; low mixing height near a road costs points
     storm = {**nulls, "weather_code": 95, "is_day": 1}
     assert score_hour(lim, storm, {}, ctx, None, rush, None)[1]

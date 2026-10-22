@@ -14,6 +14,7 @@ if [ "${1:-}" = rollback ]; then
 fi
 
 remote 'rm -rf /opt/geoai/app.prev && cp -a /opt/geoai/app /opt/geoai/app.prev'
-COPYFILE_DISABLE=1 tar czf - --no-xattrs --exclude=__pycache__ app tests | remote 'tar xzf - -C /opt/geoai && sudo systemctl restart geoai'
+COPYFILE_DISABLE=1 tar czf - --no-xattrs --exclude=__pycache__ --exclude=tests/results app tests pyproject.toml uv.lock \
+  | remote 'tar xzf - -C /opt/geoai && cd /opt/geoai && UV_PYTHON_INSTALL_DIR=/opt/uvpython uv sync --frozen --no-dev -q && sudo systemctl restart geoai'
 for _ in $(seq 20); do remote 'curl -sf localhost:8000/health' >/dev/null 2>&1 && break; sleep 2; done
 remote 'curl -sf localhost:8000/health' && echo " deployed $(git rev-parse --short HEAD)$(git diff --quiet || echo '+uncommitted')"

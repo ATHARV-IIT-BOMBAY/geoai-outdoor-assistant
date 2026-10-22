@@ -71,6 +71,10 @@ def advice(activity, profiles, rec):
         h = next((h for h in hs if any(r.startswith(key) for r in h["reasons"])), None)
         if h:
             watch.append(say.format(t=_t(h["time"]), r=next(r for r in h["reasons"] if r.startswith(key))))
+    gain = (ctx.get("elev_m") or 0) - (rec.get("origin_elev_m") or 0)
+    if activity in ("hiking", "cycling") and ctx.get("elev_m") is not None and rec.get("origin_elev_m") is not None \
+            and gain >= 150:
+        watch.append(f"a climb of about {gain} m ({rec['origin_elev_m']} m to {ctx['elev_m']} m)")
     if "child" in profiles and water and water["dist_m"] <= 200:
         watch.append(f"keep children away from the edge of {water['name']} ({water['dist_m']} m away)")
     watch += [w for w in ACTIVITIES[activity]["watch"] if not WEATHERY.search(w)]
@@ -95,6 +99,9 @@ def why(rec):
             parts.append(f"upwind of {other[len('downwind of '):].split(',')[0]} at this hour")
     if "golden hour" in h["reasons"]:
         parts.append("golden hour light")
+    tree = rec["surroundings"].get("tree_pct")
+    if tree is not None and tree >= 25:
+        parts.append(f"{tree}% tree cover around it")
     return "Why: " + "; ".join(parts) + "."
 
 
