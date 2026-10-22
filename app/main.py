@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from app import data, llm
@@ -167,6 +168,11 @@ async def ask_post(body: Ask):
 @app.get("/ask")
 async def ask_get(q: str, lat: float | None = None, lon: float | None = None):
     return await answer(q, lat, lon)
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse("/docs")
 
 
 @app.get("/health")
