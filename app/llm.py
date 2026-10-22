@@ -113,8 +113,9 @@ async def write_answer(q: str, facts: str):
     """(text, writer): SLM phrasing if it passes the number check, else the template facts."""
     if facts.startswith("Caution"):  # safety warnings stay deterministic; a 3B model once called AQI 156 "safer"
         return facts, "template"
+    brief = "\n".join(facts.splitlines()[:3])  # best option, conditions, note: shorter prompt = faster on CPU
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": WRITE_PROMPT},
-                                          {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{facts}"}], 150)
+                                          {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}], 100)
     if out and grounded(out, facts):
         out = re.sub(r"(\d)\. (\d)", r"\1.\2", out)  # "3. 8 km" -> "3.8 km"
         return f"{out.strip()}\n\nDetails:\n{facts}", "slm"

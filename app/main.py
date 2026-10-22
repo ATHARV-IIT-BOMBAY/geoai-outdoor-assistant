@@ -1,5 +1,6 @@
 """HTTP API: POST /ask {"q": "..."} or GET /ask?q=... -> grounded recommendation + evidence."""
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -19,6 +20,8 @@ SOURCES = {
     "air_quality": "Open-Meteo Air Quality API (CAMS, CC BY 4.0)",
     "travel": "OSRM public routing server (OpenStreetMap data)",
 }
+HINGLISH = re.compile(r"\b(?:mein|ko|ka|ki|ke|hai|hain|kal|aaj|parso|subah|shaam|raat|dopahar|karna|jana|chahiye|"
+                      r"kahan|kab|paas|liye|mujhe|hum|abhi|accha|acha|theek)\b", re.I)
 DEFAULT_ACTIVITY_HINT = ", ".join(a["label"] for a in ACTIVITIES.values())
 
 @asynccontextmanager
@@ -88,6 +91,10 @@ async def answer(q: str, lat=None, lon=None):
 async def understand(q: str):
     """Rules first (reliable on English keywords); the SLM fills what they missed (Hinglish, bare place names)."""
     p = parse(q)
+    # the SLM costs ~8 s on CPU: only ask it when the rules missed something or the question isn't plain English
+    if p["activity"] and p["place"] and q.isascii() and not HINGLISH.search(q):
+        p["parser"] = "rules"
+        return p
     f = await llm.parse_fields(q)
     p["parser"] = "slm+rules" if f else "rules"
     if not f:

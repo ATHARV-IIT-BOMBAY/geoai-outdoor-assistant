@@ -66,7 +66,7 @@ Self-checks: `uv run python -m app.parse`, `-m app.score`, `-m app.llm`.
 - CAMS air-quality forecasts often read high for Indian cities, so many Mumbai and Delhi answers carry a caution.
 - OpenStreetMap coverage varies: some venues are unnamed or mis-tagged, and opening hours or access aren't checked.
 - Travel times come from OSRM driving routes without live traffic.
-- Responses take roughly 10–30 s on a small CPU server (AWS t4g.small, Sydney), mostly spent waiting on the public APIs.
+- Responses take roughly 15–25 s on a 2-vCPU CPU server (AWS m7i-flex.large, Sydney), mostly spent waiting on the public APIs.
 
 ## Disclosure
 
