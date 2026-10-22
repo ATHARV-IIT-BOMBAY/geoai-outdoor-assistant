@@ -146,7 +146,10 @@ async def geocode(place: str):
 
 # ---------- OpenStreetMap (Overpass) ----------
 
-async def overpass(query: str):
+OSM_TTL_S = 86400  # map features change slowly; weather and air quality are still fetched fresh per question
+
+
+async def overpass(query: str, ttl: int = 3600):
     # Public Overpass servers are often at capacity, so race the mirrors and take the first good answer.
     async def one(url):
         t0 = time.time()
@@ -187,7 +190,7 @@ async def overpass(query: str):
             for t in pending:
                 t.cancel()
 
-    return await cached(f"op:{hash(query)}", 3600, fetch)
+    return await cached(f"op:{hash(query)}", ttl, fetch)
 
 
 def _center(el):
@@ -216,7 +219,10 @@ async def venues(lat, lon, radius_m, selectors, limit=8):
     """Named OSM features matching any selector (e.g. '[leisure=park]') within radius, nearest first."""
     body = "".join(f"nwr{s}(around:{radius_m},{lat},{lon});" for s in selectors)
     # no low cap: results come in id order, and dense cities have 500+ matches within the radius
-    els = await overpass(f"[out:json][timeout:25];({body});out tags center 3000;")
+    return _pick_venues(await overpass(f"[out:json][timeout:25];({body});out tags center 3000;", OSM_TTL_S), lat, lon, limit)
+
+
+def _pick_venues(els, lat, lon, limit):
     seen, out = set(), []
     for el in els:
         c = _center(el)
@@ -255,26 +261,41 @@ def _area_m2(el):
     return h * w * 0.6  # bbox overestimates a polygon; rough fill factor
 
 
-async def surroundings(points):
-    """Pollution sources, water and green cover around each venue, in one Overpass call."""
+def _context_sets(anchors, extra=0):
+    """Overpass sets .r .i .w .g (roads, industry, water, green) around each anchor point, radii grown by `extra` m."""
     roads = inds = water = green = ""
-    for p in points:
-        a = f"{p['lat']},{p['lon']}"
-        roads += f'way[highway~"^(motorway|trunk|primary)$"](around:{ROAD_R},{a});'
-        inds += (f"nwr[landuse=industrial](around:{INDUSTRY_R},{a});"
-                 f"nwr[man_made=works](around:{INDUSTRY_R},{a});"
-                 f"nwr[power=plant](around:{INDUSTRY_R},{a});"
-                 f"nwr[landuse=landfill](around:{INDUSTRY_R},{a});")
-        water += (f"nwr[natural=water](around:{WATER_R},{a});"
-                  f"way[waterway=river](around:{WATER_R},{a});"
-                  f"nwr[natural=beach](around:{WATER_R},{a});")
-        green += (f"nwr[leisure~\"^(park|garden|nature_reserve)$\"](around:{GREEN_R},{a});"
-                  f"nwr[landuse~\"^(forest|grass|meadow)$\"](around:{GREEN_R},{a});"
-                  f"nwr[natural~\"^(wood|scrub)$\"](around:{GREEN_R},{a});")
-    q = (f"[out:json][timeout:40];({roads})->.r;({inds})->.i;({water})->.w;({green})->.g;"
-         ".r out tags geom;.i out tags bb;.w out tags center;.g out tags center;")
-    els = await overpass(q)
+    for lat, lon in anchors:
+        a = f"{lat},{lon}"
+        roads += f'way[highway~"^(motorway|trunk|primary)$"](around:{ROAD_R + extra},{a});'
+        r = INDUSTRY_R + extra
+        inds += (f"nwr[landuse=industrial](around:{r},{a});nwr[man_made=works](around:{r},{a});"
+                 f"nwr[power=plant](around:{r},{a});nwr[landuse=landfill](around:{r},{a});")
+        r = WATER_R + extra
+        water += f"nwr[natural=water](around:{r},{a});way[waterway=river](around:{r},{a});nwr[natural=beach](around:{r},{a});"
+        r = GREEN_R + extra
+        green += (f"nwr[leisure~\"^(park|garden|nature_reserve)$\"](around:{r},{a});"
+                  f"nwr[landuse~\"^(forest|grass|meadow)$\"](around:{r},{a});nwr[natural~\"^(wood|scrub)$\"](around:{r},{a});")
+    return (f"({roads})->.r;({inds})->.i;({water})->.w;({green})->.g;",
+            ".r out tags geom;.i out tags bb;.w out tags center;.g out tags center;")
 
+
+async def surroundings(points):
+    """Pollution sources, water and green cover around each venue, in one Overpass call for the venues not
+    already cached (a venue's surroundings are cached by its OSM id, so nearby questions reuse them)."""
+    now = time.time()
+    todo = [p for p in points if not (_ctx_cache.get(p["osm"]) and _ctx_cache[p["osm"]][0] > now)]
+    if todo:
+        sets, outs = _context_sets([(p["lat"], p["lon"]) for p in todo])
+        for p, ctx in zip(todo, _contexts(todo, await overpass(f"[out:json][timeout:40];{sets}{outs}", OSM_TTL_S))):
+            _ctx_cache[p["osm"]] = (now + OSM_TTL_S, ctx)
+    return [_ctx_cache[p["osm"]][1] for p in points]
+
+
+_ctx_cache: dict = {}
+
+
+def _contexts(points, els):
+    """Per point: nearby major roads, industry, water and a count of green areas, from a superset of elements."""
     result = []
     for p in points:
         ctx = {"roads": [], "industry": [], "water": [], "green": 0}
@@ -282,6 +303,10 @@ async def surroundings(points):
             t = el.get("tags", {})
             name = t.get("name:en") or t.get("name")
             if "highway" in t and el.get("geometry"):
+                b = el.get("bounds")  # cheap reject before the per-vertex distance scan
+                if b and not (b["minlat"] - 0.01 <= p["lat"] <= b["maxlat"] + 0.01
+                              and b["minlon"] - 0.01 <= p["lon"] <= b["maxlon"] + 0.01):
+                    continue
                 # nearest vertex is a good-enough distance to a road at this scale
                 best = min([g for g in el["geometry"] if g] or [{"lat": 90, "lon": 0}], key=lambda g: haversine_m(p["lat"], p["lon"], g["lat"], g["lon"]))
                 d = haversine_m(p["lat"], p["lon"], best["lat"], best["lon"])

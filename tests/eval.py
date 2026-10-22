@@ -100,7 +100,7 @@ def main():
     print(f"| wrong-city answers | {sum(1 for r in rows if r['checks'].get('place') is False)} |")
     print(f"| errors / exceptions | {sum(1 for r in rows if r['status'] in ('error', 'exception'))} |")
     print(f"| model summary used (ok, no caution) | {sum(r['writer'] == 'slm' for r in plain)}/{len(plain)} |")
-    print(f"| banned words in summaries | {sum(bool(BANNED.search(r['summary'])) for r in oks)} |")
+    print(f"| banned words in model summaries | {sum(bool(BANNED.search(r['summary'])) for r in oks if r['writer'] == 'slm')} |")
     print(f"| latency of ok answers p50 / p95 | {pct(0.5)} s / {pct(0.95)} s |")
 
 

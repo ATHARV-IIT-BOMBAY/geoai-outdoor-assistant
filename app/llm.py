@@ -25,7 +25,8 @@ def model(kind="parse"):
     """Lazy-load once per kind (local file, else the HF repo); None on failure so the API still works on rules alone."""
     if kind not in _llms:
         from llama_cpp import Llama
-        kw = dict(n_ctx=2048, n_gpu_layers=-1, verbose=False)
+        # generation threads default to cpus//2 = 1 on the 2-vCPU server; 2 measured ~16% faster
+        kw = dict(n_ctx=2048, n_gpu_layers=-1, n_threads=os.cpu_count() or 2, verbose=False)
         try:
             _llms[kind] = (Llama(MODEL_PATH, **kw) if os.path.exists(MODEL_PATH)
                            else Llama.from_pretrained(MODEL_REPO, MODEL_FILE, **kw))
@@ -92,7 +93,7 @@ async def parse_fields(q: str):
 
 
 WRITE_PROMPT = (
-    "You are an outdoor-activity assistant. Using only the FACTS, write 1-2 plain sentences that answer the QUESTION: "
+    "You are an outdoor-activity assistant. Using only the FACTS, write ONE short plain sentence that answers the QUESTION: "
     "say where and when to go and the main reason, with its numbers. If there is a 'Comparison' line, start with which "
     "day is better. Copy place names, numbers and times exactly as written; add nothing else. Never repeat the "
     "question, never judge safety or describe the place.\n"
@@ -129,7 +130,7 @@ def acceptable(out, facts, venue, times, q):
 
 
 async def write_answer(q: str, facts: str, venue: str = "", times=()):
-    """A 1-2 sentence SLM summary of the computed facts, or None (caution answers, a busy model, or failed checks)."""
+    """A one-sentence SLM summary of the computed facts, or None (caution answers, a busy model, or failed checks)."""
     lines = facts.splitlines()
     if any(l.startswith("Caution") for l in lines):  # safety warnings stay deterministic; a 3B model once called AQI 156 "safer"
         return None
@@ -137,7 +138,7 @@ async def write_answer(q: str, facts: str, venue: str = "", times=()):
     # a busy writer is skipped (the template answer is complete); never queue a request behind it
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": WRITE_PROMPT},
                                           {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}],
-                                  90, None, "write", 1.0)
+                                  60, None, "write", 1.0)
     if out:
         out = re.sub(r"(\d)\. (\d)", r"\1.\2", out).strip()  # "3. 8 km" -> "3.8 km"
         if acceptable(out, facts, venue, times, q):

@@ -34,7 +34,7 @@ DEFAULT_ACTIVITY_HINT = ", ".join(a["label"] for a in ACTIVITIES.values())
 MAX_Q = 500
 Q_KEYS = ("q", "question", "query", "prompt", "text", "message")
 LOG_PATH = Path(os.environ.get("LOG_PATH", "logs/requests.jsonl"))
-WRITER_BUDGET_S = 35  # past this, answer with the template instead of waiting for the SLM summary
+WRITER_BUDGET_S = 20  # a rewrite (ranking changed after the early summary) only if the request is still this young
 REQUEST_DEADLINE_S = 75  # a hung public API must not hang the request
 ANSWER_TTL_S = 600
 _answers: dict = {}
@@ -242,6 +242,11 @@ async def _resolve_origin(p, q, lat, lon):
     return None, f"Where should I look for {ACTIVITIES[p['activity']]['label']}? Tell me an area or city."
 
 
+def _writer_targets(rec):
+    """(venue name, times) the summary must mention."""
+    return rec["venue"]["name"], [_hhmm(rec["window"][0]), _hhmm(rec["best"]["time"])]
+
+
 async def _answer(q: str, lat=None, lon=None):
     t0 = time.perf_counter()
     if not q:
@@ -266,6 +271,7 @@ async def _answer(q: str, lat=None, lon=None):
 
     lim = limits_for(p["activity"], p["profiles"])
     radius_km = p["radius_km"] or lim["radius_km"]
+    tm = {"understand+geocode": time.perf_counter() - t0}
     venues = await data.venues(origin["lat"], origin["lon"], int(radius_km * 1000), lim["venues"])
     if not venues:  # widen once before giving up
         radius_km *= 2.5
@@ -277,9 +283,23 @@ async def _answer(q: str, lat=None, lon=None):
                 "answer": text, "summary": text}
 
     days = min(7, max(1, (p["end"] - datetime.now(IST).replace(tzinfo=None)).days + 2))
-    ctxs, wxs, aqs, travels = await asyncio.gather(
-        data.surroundings(venues), data.weather(venues, days), data.air_quality(venues, min(days, 5)),
-        data.travel(origin, venues))
+    tm["venues"] = time.perf_counter() - t0 - sum(tm.values())
+    ctx_task = asyncio.create_task(data.surroundings(venues))  # the slow one (Overpass): ~10 s
+    wxs, aqs, travels = await asyncio.gather(data.weather(venues, days), data.air_quality(venues, min(days, 5)),
+                                             data.travel(origin, venues))
+    # Start the SLM summary now, on a ranking without surroundings, while Overpass works. It is kept only if the
+    # final ranking picks the same venue and window and the summary passes the checks against the final facts.
+    early = None
+    if not p["compare_days"]:
+        blank = [{"roads": [], "industry": [], "water": [], "green": 0} for _ in venues]
+        pre, pre_avoid = rank(venues, wxs, aqs, blank, travels, lim, p["start"], p["end"], p["hour_range"])
+        if pre and not pre[0]["best"]["blocked"]:
+            pre_facts = template_answer(p, lim, origin, pre, plan_advice(p, pre, pre_avoid))
+            early = (pre[0], asyncio.create_task(llm.write_answer(q, pre_facts, *_writer_targets(pre[0]))))
+            early[1].add_done_callback(lambda t: t.cancelled() or t.exception())  # unused result: never warn
+    tm["weather+air+travel"] = time.perf_counter() - t0 - sum(tm.values())
+    ctxs = await ctx_task
+    tm["surroundings (after weather)"] = time.perf_counter() - t0 - sum(tm.values())
     top, avoid = rank(venues, wxs, aqs, ctxs, travels, lim, p["start"], p["end"], p["hour_range"])
 
     comparison = []
@@ -295,9 +315,17 @@ async def _answer(q: str, lat=None, lon=None):
     adv = plan_advice(p, top, avoid)
     facts = template_answer(p, lim, origin, top, adv, cmp_line)
     caution = any(l.startswith("Caution") for l in facts.splitlines())
-    # the summary is optional: skip it if this request has already used most of its time budget
-    slm = (await llm.write_answer(q, facts, top[0]["venue"]["name"], [_hhmm(top[0]["window"][0]), _hhmm(top[0]["best"]["time"])])
-           if top and time.perf_counter() - t0 < WRITER_BUDGET_S else None)
+    slm = None
+    tw = time.perf_counter()
+    if top and not caution:
+        if early and early[0]["venue"]["osm"] == top[0]["venue"]["osm"]:  # times are re-checked against the final facts
+            out = await early[1]  # usually already done: it ran while Overpass was working
+            slm = out if out and llm.acceptable(out, facts, *_writer_targets(top[0]), q) else None
+        elif time.perf_counter() - t0 < WRITER_BUDGET_S:  # the ranking changed: write again if time allows
+            slm = await llm.write_answer(q, facts, *_writer_targets(top[0]))
+    tm["writer wait"] = time.perf_counter() - tw
+    tm["early writer"] = ("used" if early and slm and early[0]["venue"]["osm"] == top[0]["venue"]["osm"]
+                          else "discarded" if early else "not started")
     prefix = [x for x in (assumed and "No activity was named, so I planned for a walk. Name one for a sharper answer.",
                           p.get("rolled")) if x]
     if slm:
@@ -318,6 +346,7 @@ async def _answer(q: str, lat=None, lon=None):
             "feels_max", "rain_max", "wind_max", "gust_max", "aqi_max", "uv_max", "daylight", "downwind_mult")},
         "recommendations": top, "avoid": avoid[:12], "sources": SOURCES,
         "fetched_at": datetime.now(IST).isoformat(timespec="seconds"),
+        "timings": {k: (round(v, 1) if isinstance(v, float) else v) for k, v in tm.items()},
     }
 
 
