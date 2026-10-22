@@ -2,17 +2,18 @@
 
 # Limits (calibration knobs, tuned for Indian climate): feels_max (°C apparent temp, NWS heat-index bands), rain_max (% precip probability), wind_max/gust_max (km/h),
 # aqi_max (US AQI; 151+ is unhealthy for everyone), uv_max. daylight=True means the activity needs it. hours = preferred local hours.
+# keywords match whole words (plural "s"/"es" allowed); a trailing * makes one a prefix ("breath*" -> breathless).
 # venues = OpenStreetMap tag filters for Overpass. radius_km = default search radius.
 ACTIVITIES = {
     "running": dict(
-        label="running", keywords=["run", "running", "jog", "jogging", "sprint", "marathon"],
+        label="running", keywords=["run", "running", "runner", "jog", "jogging", "sprint", "marathon"],
         venues=["[leisure=park]", "[leisure=track]", "[leisure=garden]", "[leisure=nature_reserve]"],
         feels_max=37, rain_max=40, wind_max=30, gust_max=45, aqi_max=150, uv_max=7, daylight=False,
         hours=[5, 6, 7, 8, 17, 18, 19], radius_km=6,
         carry=["water bottle", "light breathable clothing"],
         watch=["heat and humidity", "traffic at road crossings"]),
     "cycling": dict(
-        label="cycling", keywords=["cycle", "cycling", "bike", "biking", "bicycle", "ride"],
+        label="cycling", keywords=["cycle", "cycling", "bike", "biking", "bicycle", "ride", "riding"],
         venues=["[leisure=park]", "[highway=cycleway]", "[leisure=nature_reserve]", "[natural=beach]"],
         feels_max=38, rain_max=30, wind_max=25, gust_max=40, aqi_max=150, uv_max=7, daylight=True,
         hours=[6, 7, 8, 17, 18], radius_km=10,
@@ -71,7 +72,7 @@ ACTIVITIES = {
         carry=["mat", "shade/umbrella", "drinking water", "insect repellent"],
         watch=["afternoon showers", "food spoiling in heat"]),
     "event": dict(
-        label="outdoor event", keywords=["party", "birthday", "wedding", "fair", "event", "gathering",
+        label="outdoor event", keywords=["party", "parties", "birthday", "wedding", "fair", "event", "gathering",
                                          "function", "celebration", "reception", "mela"],
         venues=["[leisure=park]", "[leisure=garden]", "[amenity=events_venue]", "[landuse=recreation_ground]"],
         feels_max=36, rain_max=20, wind_max=25, gust_max=35, aqi_max=180, uv_max=7, daylight=False,
@@ -79,7 +80,7 @@ ACTIVITIES = {
         carry=["canopy or tent as rain backup", "fans/coolers", "drinking water for guests", "mosquito repellent"],
         watch=["rain probability on the day", "gusts that can topple decor", "parking near main roads"]),
     "photography": dict(
-        label="photography", keywords=["photo", "photos", "photography", "shoot", "sunset", "sunrise",
+        label="photography", keywords=["photo", "photography", "shoot", "shooting", "sunset", "sunrise",
                                        "golden hour", "pictures"],
         venues=["[tourism=viewpoint]", "[natural=beach]", "[man_made=pier]", "[historic=fort]",
                 "[natural=peak]"],
@@ -91,14 +92,14 @@ ACTIVITIES = {
 
 # Profile adjustments: deltas on activity limits and multipliers on penalties.
 PROFILES = {
-    "asthma": dict(keywords=["asthma", "asthmatic", "breath", "inhaler", "lung", "copd", "wheez"],
+    "asthma": dict(keywords=["asthma", "asthmatic", "breath*", "inhaler", "lung", "copd", "wheez*"],
                    aqi_factor=0.6, downwind_mult=2.0, feels_delta=-1,
                    carry=["reliever inhaler"], watch=["pollution peaks near main roads", "dust on windy days"]),
     "senior": dict(keywords=["parents", "senior", "elderly", "old age", "old parents", "grandparent", "grandma", "grandpa",
                              "grandfather", "grandmother", "aged", "retired"],
                    aqi_factor=0.8, downwind_mult=1.5, feels_delta=-3, uv_delta=-2,
                    carry=["regular medication", "walking stick if used"], watch=["heat exhaustion", "uneven ground"]),
-    "child": dict(keywords=["kid", "kids", "child", "children", "toddler", "son", "daughter", "baby", "school"],
+    "child": dict(keywords=["kid", "kiddo", "child", "children", "toddler", "son", "daughter", "baby", "babies"],
                   aqi_factor=0.75, downwind_mult=1.5, feels_delta=-2, uv_delta=-2,
                   carry=["extra water", "sunscreen for kids"], watch=["supervision near water and roads"]),
     "pregnant": dict(keywords=["pregnant", "pregnancy", "expecting"],

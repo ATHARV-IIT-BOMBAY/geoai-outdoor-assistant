@@ -72,7 +72,8 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .caution { border-left: 4px solid var(--road); padding: 4px 0 4px 12px; margin: 0 0 14px; }
 .summary { margin: 0 0 16px; font-size: 1.05rem; }
 .pick h2 { font: 700 1.6rem/1.05 "Barlow Condensed", sans-serif; margin: 0; }
-.pick .when { color: var(--contour); font-weight: 600; margin: 2px 0 12px; }
+.pick .when { color: var(--contour); font-weight: 600; margin: 2px 0 4px; }
+.pick .searched { color: var(--ink-2); font-size: .9rem; margin: 0 0 12px; }
 .readings { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-bottom: 18px; }
 .readings div { background: var(--panel); padding: 8px 10px; }
 .readings b { display: block; font: 600 1.25rem "Barlow Condensed", sans-serif; }
@@ -161,7 +162,7 @@ summary { cursor: pointer; color: var(--ink); }
       <li><button type="button">Where can I play cricket in Andheri this weekend?</button></li>
       <li><button type="button">kal subah Bandra mein jogging karna hai, mujhe asthma hai</button></li>
       <li><button type="button">Golf within 30 km of Pune on Saturday</button></li>
-      <li><button type="button">Sunset photography near Powai Lake this evening</button></li>
+      <li><button type="button">Sunset photography near Powai Lake tomorrow</button></li>
       <li><button type="button">Taking my 5 year old for a picnic in Cubbon Park, Bengaluru on Sunday</button></li>
     </ul>
 
@@ -225,6 +226,9 @@ $("#locate").addEventListener("click", () => {
     () => { here = null; btn.textContent = "Location blocked. Name a place instead"; },
     { timeout: 10000 });
 });
+// a shared link (?q=...) runs its question straight away; the API returns these as view_url
+const shared = new URLSearchParams(location.search).get("q");
+if (shared) { $("#q").value = shared; queueMicrotask(() => $("#ask").requestSubmit()); }
 $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask").requestSubmit(); } });
 
 $("#ask").addEventListener("submit", async (e) => {
@@ -267,26 +271,28 @@ function render(res) {
   $("#status").textContent = res.status === "ok" ? `Answered in ${res.latency_s} s from data fetched at ${new Date(res.fetched_at).toLocaleTimeString("en-IN")}.` : "";
   const out = $("#result");
   if (res.status !== "ok") {
-    out.hidden = false; out.innerHTML = `<p class="summary">${esc(res.answer)}</p>`;
+    out.hidden = false; out.innerHTML = `<p class="summary">${esc(res.summary || res.answer)}</p>`;
     $("#q").focus(); clearMap(); $("#gridwrap").style.display = "none"; return;
   }
   const recs = res.recommendations, best = recs[0], b = best.best;
-  const [summary] = res.answer.split("\n\nDetails:\n");
-  const caution = res.facts.startsWith("Caution") ? res.facts.split("\n")[0] : null;
+  const cmp = (res.comparison || []).length > 1 ? `<h3>Day by day</h3><ul>${res.comparison.map((c) =>
+    `<li>${fmtDay(c.day)}: best ${fmtTime(c.best.time)} at ${esc(c.venue)}, feels ${Math.round(c.best.feels_c)}°C, rain ${c.best.rain_pct ?? "–"}%, AQI ${c.best.aqi ?? "–"}${c.best.blocked ? " (over a limit)" : ""}</li>`).join("")}</ul>` : "";
   const alts = recs.slice(1).map((r) => `${esc(r.venue.name)}, ${fmtDay(r.window[0])} ${fmtTime(r.window[0])}–${fmtTime(r.window[1])}${r.best.blocked ? " (also over limits)" : ""}`);
   const list = (title, items) => items.length ? `<h3>${title}</h3><ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>` : "";
   out.hidden = false;
   out.innerHTML = `
-    ${caution ? `<p class="caution">${esc(caution)}</p>` : `<p class="summary">${esc(summary)}</p>`}
+    <p class="${res.caution ? "caution" : "summary"}">${esc(res.summary)}</p>
     <div class="pick">
       <h2>${esc(best.venue.name)}</h2>
       <p class="when">${fmtDay(best.window[0])}, ${fmtTime(best.window[0])} to ${fmtTime(best.window[1])},
         ${(best.venue.dist_m / 1000).toFixed(1)} km away${best.travel ? `, about ${best.travel.min} min by road` : ""}</p>
+      <p class="searched">Searching around ${esc(res.searched)}</p>
     </div>
+    <div class="lists">${cmp}</div>
     <div class="readings">
       <div><b>${Math.round(b.feels_c)}°C</b><small>Feels like</small></div>
       <div><b>${b.rain_pct ?? "–"}%</b><small>Rain chance</small></div>
-      <div><b>${Math.round(b.wind_kmh)}</b><small>Wind km/h, ${esc(b.wind_from)}</small></div>
+      <div><b>${b.wind_kmh == null ? "–" : Math.round(b.wind_kmh)}</b><small>Wind km/h${b.wind_from ? ", " + esc(b.wind_from) : ""}</small></div>
       <div><b>${b.aqi ?? "–"}</b><small>US AQI</small></div>
     </div>
     <div class="lists">${list("Carry", lines(res.facts, "Carry"))}${list("Watch for", lines(res.facts, "Watch for"))}${list("Avoid", avoidItems(res, b.time))}</div>

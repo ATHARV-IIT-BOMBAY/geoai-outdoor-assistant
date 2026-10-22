@@ -89,12 +89,13 @@ async def parse_fields(q: str):
 
 WRITE_PROMPT = (
     "You are an outdoor-activity assistant. Answer the user's QUESTION in 2-3 friendly sentences using only the "
-    "FACTS: name the recommended place and its time window and give the main reason. If the facts start with "
-    "'Caution', say that first. Copy numbers, times, dates and place names exactly; never add new ones, never describe facilities, and never say a place is open or closed. "
+    "FACTS: name the recommended place and its time window and give the main reason. If there is a "
+    "'Comparison' line, start with which day is better. Copy numbers, times, dates and place names exactly; never add new ones, never describe facilities, and never say a place is open or closed. "
     "Reply in English. Plain text, no headings, no lists."
 )
 # claims we never check (opening hours, reputation, scenery): a summary making them falls back to the template
-UNVERIFIED = re.compile(r"\b(?:open|opens|closed|popular|famous|beautiful|scenic|stunning|views?|facilit\w*|crowded)\b", re.I)
+UNVERIFIED = re.compile(r"\b(?:open|opens|closed|popular|famous|beautiful|scenic|stunning|views?|facilit\w*|crowded|"
+                        r"safe|safer|unsafe|acceptable|healthy|pleasant|perfect|ideal|great)\b", re.I)
 WORD = re.compile(r"\w+")
 NUM = re.compile(r"\d+(?:\.\d+)?")
 TIME = re.compile(r"\d{1,2}(?::\d{2})?\s?[AP]M", re.I)
@@ -112,21 +113,23 @@ def _t(x):  # "7 am" / "7:00 AM" -> "7:00AM"
 
 
 async def write_answer(q: str, facts: str):
-    """(text, writer): SLM phrasing if it passes the number check, else the template facts."""
-    if facts.startswith("Caution"):  # safety warnings stay deterministic; a 3B model once called AQI 156 "safer"
-        return facts, "template"
-    brief = "\n".join(facts.splitlines()[:3])  # best option, conditions, note: shorter prompt = faster on CPU
+    """A 2-3 sentence SLM summary of the computed facts, or None (caution answers, or a summary that fails the checks)."""
+    lines = facts.splitlines()
+    if any(l.startswith("Caution") for l in lines):  # safety warnings stay deterministic; a 3B model once called AQI 156 "safer"
+        return None
+    # the core facts only: a shorter prompt is faster on CPU
+    brief = "\n".join(l for l in lines if l.startswith(("Comparison:", "Best option", "At ", "Note:")))
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": WRITE_PROMPT},
                                           {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}], 100)
-    if out and grounded(out, facts) and not UNVERIFIED.search(out):
-        out = re.sub(r"(\d)\. (\d)", r"\1.\2", out)  # "3. 8 km" -> "3.8 km"
-        return f"{out.strip()}\n\nDetails:\n{facts}", "slm"
-    return facts, "template"
+    if out and grounded(out, facts) and not UNVERIFIED.search(out) and not out.lstrip().lower().startswith("caution"):
+        return re.sub(r"(\d)\. (\d)", r"\1.\2", out).strip()  # "3. 8 km" -> "3.8 km"
+    return None
 
 
 if __name__ == "__main__":
     assert grounded("Go at 7:00 AM, feels like 30°C", "7:00 AM ... feels like 30°C")
     assert not grounded("Go at 6:00 AM", "7:00 AM")
     assert UNVERIFIED.search("It's open from 7 AM") and not UNVERIFIED.search("Go at 7 AM, it's cool and dry")
+    assert UNVERIFIED.search("MS Building Park is safe for your parents") and UNVERIFIED.search("pleasant weather")
     assert grounded("Go at 7 am", "7:00 AM") and not grounded("at 12:00 PM", "12:00 AM, 7:00 PM")
     print("ok")

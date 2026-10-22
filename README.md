@@ -17,9 +17,29 @@ curl -X POST https://32-237-40-94.sslip.io/ask \
   -d '{"q": "Best time to go running near Powai tomorrow morning? I have asthma"}'
 ```
 
-`GET /ask?q=...` works too. `lat`/`lon` are optional and used when the question names no place.
-The response contains `answer` (plain text), `status` (`ok` / `clarify` / `no_venues` / `error`),
-`recommendations` (top 3 places, each with an hour-by-hour score and reasons), `avoid`, `parsed`, `limits`, `sources` and `fetched_at`.
+**API endpoint:** `https://32-237-40-94.sslip.io/ask` (GET or POST; CORS enabled).
+
+- The question can be sent as `q`, `question`, `query`, `prompt` or `text`: in a JSON body, a form, a plain-text body, or as a GET parameter (up to 500 characters).
+- `lat`/`lon` are optional and used when the question names no place (for example "near me").
+- `format=text` returns just the answer as plain text.
+
+The JSON response contains:
+
+| Field | What it holds |
+|---|---|
+| `status` | `ok`, `clarify`, `no_venues` or `error` |
+| `summary` | One-paragraph answer |
+| `answer` | Full text answer |
+| `caution` | Whether no hour meets the safety limits |
+| `searched` | The area that was searched around |
+| `comparison` | Per-day bests, for "Saturday or Sunday?" questions |
+| `recommendations` | Top 3 places, each with hour-by-hour scores and reasons |
+| `avoid` | Hours to avoid, with reasons |
+| `parsed` | How the question was understood |
+| `limits` | The safety limits applied |
+| `sources` | Data sources used |
+| `fetched_at` | When the data was fetched |
+| `view_url` | Opens this answer in the portal |
 
 ## How it works
 

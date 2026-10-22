@@ -1,6 +1,8 @@
 """Live data fetchers. Every call hits a free, open API at query time; responses are cached briefly."""
 import asyncio
+import difflib
 import math
+import re
 import time
 
 import httpx
@@ -57,12 +59,42 @@ def compass(deg):
     return COMPASS[round(deg / 22.5) % 16]
 
 
-# ---------- geocoding (Nominatim) ----------
+# ---------- geocoding (Nominatim, Photon fallback) ----------
 
+# Prefer the locality people mean; a district centroid can be 45 km out in farmland ("Thane") and the first
+# non-district hit can be a road ("Hinjewadi" -> "Wakad Flyover").
+SETTLEMENTS = {"city", "town", "village", "suburb", "neighbourhood", "quarter", "hamlet", "city_district", "borough",
+               "municipality", "locality", "residential", "isolated_dwelling", "island"}
 BROAD_AREAS = {"state_district", "county", "state", "region", "country"}
+_FILLER = {"the", "near", "in", "of", "at", "and"}
+# kinds of result that make a good centre for "near X": localities, landmarks, stations
+GOOD_CLASSES = {"place", "leisure", "tourism", "natural", "landuse", "historic", "waterway", "railway",
+                "public_transport", "aeroway"}
 
 _nominatim_lock = asyncio.Lock()
 _nominatim_last = 0.0
+
+
+def _tokens(s):
+    return [w for w in re.findall(r"\w+", s.lower()) if w not in _FILLER]
+
+
+def _name_match(query, text, cutoff):
+    """Share of the user's place words found (fuzzily) in a result's names; spelling varies (Hinjewadi/Hinjawadi)."""
+    q, words = _tokens(query), _tokens(text)
+    if not q or not query.isascii():  # Devanagari etc.: trust the geocoder's own matching
+        return 1.0
+    hit = sum(any(difflib.SequenceMatcher(None, w, x).ratio() >= cutoff for x in words) for w in q)
+    return hit / len(q)
+
+
+def _good(x):
+    """A good origin keeps Nominatim's relevance order (famous Andheri before a Punjab village of the same name);
+    only districts/states, schools, shops and plain roads are passed over."""
+    a, c = x.get("addresstype"), x.get("category")
+    if a in BROAD_AREAS:
+        return False
+    return a in SETTLEMENTS or c in GOOD_CLASSES or (c == "boundary" and a not in BROAD_AREAS)
 
 
 async def geocode(place: str):
@@ -74,23 +106,32 @@ async def geocode(place: str):
                 await asyncio.sleep(wait)
             r = await client.get(
                 "https://nominatim.openstreetmap.org/search",
-                params={"q": place, "format": "jsonv2", "limit": 5, "countrycodes": "in"},
+                params={"q": place, "format": "jsonv2", "limit": 5, "countrycodes": "in", "accept-language": "en"},
             )
             _nominatim_last = time.time()
         r.raise_for_status()
-        js = r.json()
-        if js:
-            # "Thane" also names a district whose centroid is 45 km out in farmland: prefer the settlement
-            best = next((x for x in js if x.get("addresstype") not in BROAD_AREAS), js[0])
-            return {"name": best["display_name"], "lat": float(best["lat"]), "lon": float(best["lon"])}
-        # Nominatim is inconsistent on alternate names (Bangalore/Bengaluru); Photon (also OSM data) is better at them
+        hits = [x for x in r.json() if _name_match(place, f"{x.get('name', '')} {x['display_name']}", 0.8) >= 0.5]
+        as_origin = lambda x: {"name": x["display_name"], "lat": float(x["lat"]), "lon": float(x["lon"]),
+                               "kind": x.get("addresstype")}
+        good = next((x for x in hits if _good(x)), None)
+        if good:
+            return as_origin(good)
+        # a road the user named ("Marine Drive") or a school/state is a fallback, after Photon has had a go
+        best = as_origin(next((x for x in hits if x.get("addresstype") not in BROAD_AREAS), hits[0])) if hits else None
+        # Nominatim only offered a school/shop or a whole state, or nothing: Photon (also OSM data) is better at
+        # localities and alternate names (Bangalore/Bengaluru, Hinjewadi/Hinjawadi)
         r = await client.get("https://photon.komoot.io/api/", params={"q": place, "limit": 5})
-        feats = [f for f in r.json().get("features", []) if f["properties"].get("countrycode") == "IN"]
-        if not feats:
-            return None
-        pr, (lon, lat) = feats[0]["properties"], feats[0]["geometry"]["coordinates"]
-        name = ", ".join(x for x in (pr.get("name"), pr.get("city"), pr.get("state")) if x)
-        return {"name": name, "lat": lat, "lon": lon}
+        for f in r.json().get("features", []):
+            pr = f["properties"]
+            if pr.get("countrycode") != "IN" or pr.get("osm_key") in ("building", "shop", "office"):
+                continue
+            if best and pr.get("osm_key") != "place":  # only replace Nominatim's pick with a real locality
+                continue
+            name = ", ".join(x for x in (pr.get("name"), pr.get("city") or pr.get("county"), pr.get("state")) if x)
+            if _name_match(place, name, 0.65) >= 0.5:
+                lon, lat = f["geometry"]["coordinates"]
+                return {"name": name, "lat": lat, "lon": lon, "kind": pr.get("type")}
+        return best
 
     return await cached(f"geo:{place.lower()}", 86400, fetch)
 
@@ -142,7 +183,8 @@ def _center(el):
 async def venues(lat, lon, radius_m, selectors, limit=8):
     """Named OSM features matching any selector (e.g. '[leisure=park]') within radius, nearest first."""
     body = "".join(f"nwr{s}(around:{radius_m},{lat},{lon});" for s in selectors)
-    els = await overpass(f"[out:json][timeout:25];({body});out tags center 300;")
+    # no low cap: results come in id order, and dense cities have 500+ matches within the radius
+    els = await overpass(f"[out:json][timeout:25];({body});out tags center 3000;")
     seen, out = set(), []
     for el in els:
         c = _center(el)

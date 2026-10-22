@@ -45,8 +45,11 @@ def downwind(ctx, wind_from, wind_kmh, mult):
 def score_hour(lim, w, aq, ctx, sun, t, travel_min):
     """(score 0-100, blocked: bool, reasons: list[str]) for one venue at one hour."""
     reasons, blocks, s = [], [], 100.0
-    feels, rain, wind, gust = w["apparent_temperature"], w["precipitation_probability"], w["wind_speed_10m"], w["wind_gusts_10m"]
-    uv, is_day = w["uv_index"], w["is_day"]
+    # Open-Meteo returns nulls near the end of the forecast range: never let one crash the answer
+    feels, rain, uv = w["apparent_temperature"], w.get("precipitation_probability"), w.get("uv_index")
+    wind = w.get("wind_speed_10m") or 0
+    gust = w.get("wind_gusts_10m") or wind
+    is_day = w.get("is_day", 1)
     aqi = aq.get("us_aqi")
 
     if rain is not None:
@@ -86,11 +89,11 @@ def score_hour(lim, w, aq, ctx, sun, t, travel_min):
             s -= 30
         else:
             s -= 15  # flat midday light
-        if 20 <= w["cloud_cover"] <= 60:
+        if w.get("cloud_cover") is not None and 20 <= w["cloud_cover"] <= 60:
             s += 5
             reasons.append(f"broken cloud {w['cloud_cover']}%")
 
-    pen, why = downwind(ctx, w["wind_direction_10m"], wind, lim["downwind_mult"])
+    pen, why = (0, None) if w.get("wind_direction_10m") is None else downwind(ctx, w["wind_direction_10m"], wind, lim["downwind_mult"])
     if why:
         s -= pen
         reasons.append(why)
@@ -122,8 +125,9 @@ def rank(venues, wxs, aqs, ctxs, travels, lim, start, end, hour_range=(0, 24), t
                                           tr["min"] if tr else None)
             hours.append({"time": ts, "score": round(sc), "blocked": blocked, "reasons": why,
                           "feels_c": w["apparent_temperature"], "rain_pct": w["precipitation_probability"],
-                          "wind_kmh": w["wind_speed_10m"], "wind_from": compass(w["wind_direction_10m"]),
-                          "uv": w["uv_index"], "aqi": aq.get("us_aqi"), "pm2_5": aq.get("pm2_5")})
+                          "wind_kmh": w.get("wind_speed_10m"),
+                          "wind_from": None if w.get("wind_direction_10m") is None else compass(w["wind_direction_10m"]),
+                          "uv": w.get("uv_index"), "aqi": aq.get("us_aqi"), "pm2_5": aq.get("pm2_5")})
         if not hours:
             continue
         best_i = max(range(len(hours)), key=lambda i: (not hours[i]["blocked"], hours[i]["score"]))
@@ -152,4 +156,10 @@ if __name__ == "__main__":
     assert downwind(ctx, 75, 10, 1.0)[0] > 15
     assert downwind(ctx, 250, 10, 1.0)[0] == 0
     assert downwind(ctx, 75, 10, 2.0)[0] > downwind(ctx, 75, 10, 1.0)[0]
+    # H2: an hour full of nulls scores instead of crashing
+    lim = {"rain_max": 30, "feels_max": 35, "wind_max": 25, "gust_max": 40, "aqi_max": 150, "uv_max": 7, "daylight": False,
+           "label": "photography", "hours": [], "downwind_mult": 1.0}
+    nulls = {"apparent_temperature": 30, "precipitation_probability": None, "wind_speed_10m": None, "wind_gusts_10m": None,
+             "uv_index": None, "is_day": None, "cloud_cover": None, "wind_direction_10m": None}
+    score_hour(lim, nulls, {}, ctx, None, datetime(2026, 10, 23, 7), None)
     print("ok")
