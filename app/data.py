@@ -75,9 +75,16 @@ async def geocode(place: str):
             _nominatim_last = time.time()
         r.raise_for_status()
         js = r.json()
-        if not js:
+        if js:
+            return {"name": js[0]["display_name"], "lat": float(js[0]["lat"]), "lon": float(js[0]["lon"])}
+        # Nominatim is inconsistent on alternate names (Bangalore/Bengaluru); Photon (also OSM data) is better at them
+        r = await client.get("https://photon.komoot.io/api/", params={"q": place, "limit": 5})
+        feats = [f for f in r.json().get("features", []) if f["properties"].get("countrycode") == "IN"]
+        if not feats:
             return None
-        return {"name": js[0]["display_name"], "lat": float(js[0]["lat"]), "lon": float(js[0]["lon"])}
+        pr, (lon, lat) = feats[0]["properties"], feats[0]["geometry"]["coordinates"]
+        name = ", ".join(x for x in (pr.get("name"), pr.get("city"), pr.get("state")) if x)
+        return {"name": name, "lat": lat, "lon": lon}
 
     return await cached(f"geo:{place.lower()}", 86400, fetch)
 
@@ -139,7 +146,11 @@ async def venues(lat, lon, radius_m, selectors, limit=8):
             "dist_m": round(haversine_m(lat, lon, *c)),
         })
     out.sort(key=lambda v: v["dist_m"])
-    return out[:limit]
+    kept = []  # one pick per site: "Tennis Court 1/2/3" in the same complex are not alternatives
+    for v in out:
+        if all(haversine_m(v["lat"], v["lon"], k["lat"], k["lon"]) > 150 for k in kept):
+            kept.append(v)
+    return kept[:limit]
 
 
 ROAD_R, INDUSTRY_R, WATER_R, GREEN_R = 800, 2500, 1000, 400
@@ -181,9 +192,9 @@ async def surroundings(points):
         for el in els:
             t = el.get("tags", {})
             name = t.get("name:en") or t.get("name")
-            if "highway" in t and "geometry" in el:
+            if "highway" in t and el.get("geometry"):
                 # nearest vertex is a good-enough distance to a road at this scale
-                best = min(el["geometry"], key=lambda g: haversine_m(p["lat"], p["lon"], g["lat"], g["lon"]))
+                best = min([g for g in el["geometry"] if g] or [{"lat": 90, "lon": 0}], key=lambda g: haversine_m(p["lat"], p["lon"], g["lat"], g["lon"]))
                 d = haversine_m(p["lat"], p["lon"], best["lat"], best["lon"])
                 if d <= ROAD_R:
                     ctx["roads"].append({"name": name or t.get("ref") or f"{t['highway']} road",
