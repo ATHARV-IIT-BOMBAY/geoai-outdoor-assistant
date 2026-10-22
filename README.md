@@ -6,7 +6,7 @@ Ask a free-form question such as *"kal subah Bandra mein jogging, mujhe asthma h
 The assistant picks the best nearby place and time window, and says what to carry, what to watch for and which hours to avoid.
 Every fact comes from data fetched live for that question.
 
-- **Live endpoint:** https://32-237-40-94.sslip.io (interactive docs at `/docs`)
+- **Live portal:** https://32-237-40-94.sslip.io (map, answer card and an hour-by-hour grid; API docs at `/docs`)
 - **Model repo:** https://huggingface.co/AtharvIITB/geoai-outdoor-slm
 
 ## API

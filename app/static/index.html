@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outdoor Planner</title>
+<meta name="description" content="Where and when to head outdoors, from live maps, weather and air quality.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<style>
+:root {
+  --paper: #eef2ea; --panel: #f7f9f4; --ink: #1d2321; --ink-2: #4b5450; --rule: #cfd8cb;
+  --contour: #7a4a22; --water: #2f6fa3; --green: #3e7a3a; --road: #c2362b; --focus: #2f6fa3;
+  --cell-empty: #e2e8de;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #151a18; --panel: #1b211f; --ink: #e6ebe4; --ink-2: #a7b2ab; --rule: #2e3833;
+    --contour: #d19a63; --water: #6fa8d6; --green: #6db267; --road: #ec6a5e; --focus: #6fa8d6;
+    --cell-empty: #252d29;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #151a18; --panel: #1b211f; --ink: #e6ebe4; --ink-2: #a7b2ab; --rule: #2e3833;
+  --contour: #d19a63; --water: #6fa8d6; --green: #6db267; --road: #ec6a5e; --focus: #6fa8d6;
+  --cell-empty: #252d29;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--paper); color: var(--ink);
+  font: 400 16px/1.5 Barlow, system-ui, sans-serif; font-variant-numeric: tabular-nums;
+}
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.app { display: grid; grid-template-columns: 420px minmax(0, 1fr); height: 100vh; }
+.panel { background: var(--panel); border-right: 1px solid var(--rule); overflow-y: auto; padding: 28px 28px 40px; }
+.stage { display: grid; grid-template-rows: 1fr auto; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; }
+
+h1 {
+  font: 700 2.6rem/0.95 "Barlow Condensed", sans-serif; letter-spacing: -0.01em; margin: 0 0 6px;
+  color: var(--ink);
+}
+h1 span { display: block; color: var(--contour); }
+.lede { color: var(--ink-2); margin: 0 0 22px; max-width: 34ch; }
+
+form { display: grid; gap: 10px; }
+textarea {
+  width: 100%; min-height: 84px; resize: vertical; padding: 12px 14px; font: inherit; color: var(--ink);
+  background: var(--paper); border: 1.5px solid var(--rule); border-radius: 6px;
+}
+textarea:focus { border-color: var(--water); outline: none; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button { font: 600 0.95rem Barlow, sans-serif; cursor: pointer; border-radius: 6px; }
+.primary { background: var(--ink); color: var(--panel); border: 0; padding: 11px 20px; }
+.primary:disabled { opacity: .55; cursor: progress; }
+.ghost { background: none; border: 1px solid var(--rule); color: var(--ink-2); padding: 9px 12px; }
+.ghost[aria-pressed="true"] { border-color: var(--contour); color: var(--contour); background: color-mix(in srgb, var(--contour) 10%, transparent); }
+.who { margin-top: 4px; }
+.who legend { font-size: .85rem; color: var(--ink-2); padding: 0; margin-bottom: 6px; }
+fieldset { border: 0; padding: 0; margin: 0; }
+.examples { margin: 18px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.examples button {
+  background: none; border: 0; padding: 4px 0; text-align: left; color: var(--water); font-weight: 500;
+  text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--water) 35%, transparent); text-underline-offset: 3px;
+}
+.examples-title { font-size: .85rem; color: var(--ink-2); margin: 22px 0 0; }
+
+.status { margin-top: 22px; color: var(--ink-2); }
+.result { margin-top: 26px; border-top: 2px solid var(--ink); padding-top: 18px; }
+.caution { border-left: 4px solid var(--road); padding: 4px 0 4px 12px; margin: 0 0 14px; }
+.summary { margin: 0 0 16px; font-size: 1.05rem; }
+.pick h2 { font: 700 1.6rem/1.05 "Barlow Condensed", sans-serif; margin: 0; }
+.pick .when { color: var(--contour); font-weight: 600; margin: 2px 0 12px; }
+.readings { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-bottom: 18px; }
+.readings div { background: var(--panel); padding: 8px 10px; }
+.readings b { display: block; font: 600 1.25rem "Barlow Condensed", sans-serif; }
+.readings small { color: var(--ink-2); }
+.lists h3 { font: 600 1.05rem "Barlow Condensed", sans-serif; margin: 14px 0 4px; }
+.lists ul { margin: 0; padding-left: 18px; }
+.lists li { margin: 2px 0; }
+.alts { margin-top: 16px; color: var(--ink-2); font-size: .95rem; }
+details { margin-top: 18px; font-size: .9rem; color: var(--ink-2); }
+summary { cursor: pointer; color: var(--ink); }
+.sources li { margin: 3px 0; }
+
+#map { min-height: 0; position: relative; }
+.compass {
+  position: absolute; right: 12px; top: 12px; z-index: 2; background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 8px 12px; display: none; align-items: center; gap: 10px; font-size: .9rem;
+}
+.compass svg { width: 34px; height: 34px; transition: transform .4s ease; }
+.legend {
+  position: absolute; left: 12px; top: 12px; z-index: 2; background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 6px 10px; font-size: .8rem; display: none; gap: 12px;
+}
+.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px; }
+
+.grid-wrap { background: var(--panel); border-top: 1px solid var(--rule); padding: 12px 16px 14px; display: none; }
+.grid-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.grid-head h2 { font: 600 1.15rem "Barlow Condensed", sans-serif; margin: 0; }
+.grid-head p { margin: 0; font-size: .85rem; color: var(--ink-2); }
+.hgrid { overflow-x: auto; }
+.hgrid table { border-collapse: separate; border-spacing: 2px; }
+.hgrid th { font-weight: 500; font-size: .78rem; color: var(--ink-2); white-space: nowrap; }
+.hgrid th.venue { text-align: right; padding-right: 8px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; color: var(--ink); font-size: .85rem; }
+.hgrid th.day { text-align: left; color: var(--contour); font-weight: 600; }
+.cell { width: 26px; height: 26px; border: 0; padding: 0; border-radius: 3px; display: block; }
+.cell.blocked { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--road) 55%, transparent) 0 3px, transparent 3px 6px), var(--cell-empty); }
+.cell[aria-pressed="true"] { outline: 2.5px solid var(--ink); outline-offset: 1px; }
+.reading { margin-top: 8px; font-size: .9rem; min-height: 1.5em; }
+
+.marker {
+  width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  font: 700 .95rem "Barlow Condensed", sans-serif; color: #fff; background: var(--green); border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.35);
+}
+.marker.sel { background: var(--water); transform: scale(1.15); }
+.origin { width: 12px; height: 12px; border-radius: 50%; background: var(--water); border: 2px solid #fff; box-shadow: 0 0 0 4px color-mix(in srgb, var(--water) 30%, transparent); }
+.source { width: 11px; height: 11px; background: var(--road); border: 1.5px solid #fff; transform: rotate(45deg); }
+.maplibregl-popup-content { font: .85rem Barlow, sans-serif; color: #1d2321; }
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .panel { border-right: 0; padding: 20px 16px 28px; }
+  .stage { grid-template-rows: 60vh auto; }
+  h1 { font-size: 2.2rem; }
+  .compass { top: 88px; }
+  .legend { flex-wrap: wrap; right: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .compass svg { transition: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <main class="panel">
+    <h1>Where &amp; when<span>to head outdoors</span></h1>
+    <p class="lede">Ask in your own words. Answers come from live maps, weather and air quality, checked hour by hour.</p>
+
+    <form id="ask">
+      <label for="q" class="visually-hidden" style="position:absolute;left:-9999px">Your question</label>
+      <textarea id="q" name="q" placeholder="Best time to go running near Powai tomorrow morning?" required></textarea>
+      <fieldset class="who">
+        <legend>Anyone who needs extra care?</legend>
+        <div class="row" id="profiles">
+          <button type="button" class="ghost" aria-pressed="false" data-add="I have asthma">Asthma</button>
+          <button type="button" class="ghost" aria-pressed="false" data-add="with my elderly parents">Seniors</button>
+          <button type="button" class="ghost" aria-pressed="false" data-add="with kids">Children</button>
+          <button type="button" class="ghost" aria-pressed="false" data-add="I am pregnant">Pregnancy</button>
+        </div>
+      </fieldset>
+      <div class="row">
+        <button class="primary" id="go" type="submit">Find a place and time</button>
+        <button class="ghost" id="locate" type="button">Use my location</button>
+      </div>
+    </form>
+
+    <p class="examples-title">Or try one of these</p>
+    <ul class="examples" id="examples">
+      <li><button type="button">Where can I play cricket in Andheri this weekend?</button></li>
+      <li><button type="button">kal subah Bandra mein jogging karna hai, mujhe asthma hai</button></li>
+      <li><button type="button">Golf within 30 km of Pune on Saturday</button></li>
+      <li><button type="button">Sunset photography near Powai Lake this evening</button></li>
+      <li><button type="button">Taking my 5 year old for a picnic in Cubbon Park, Bengaluru on Sunday</button></li>
+    </ul>
+
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+    <section class="result" id="result" hidden></section>
+  </main>
+
+  <div class="stage">
+    <div id="map" aria-label="Map of recommended places">
+      <div class="compass" id="compass">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" fill="none" stroke="currentColor" stroke-opacity=".25"/><path d="M20 5 L26 21 L20 17 L14 21 Z" fill="var(--water)"/><path d="M20 17 L20 34" stroke="var(--water)" stroke-width="2.5"/></svg>
+        <div id="windtext"></div>
+      </div>
+      <div class="legend" id="legend">
+        <span><i style="background:var(--green);border-radius:50%"></i>Ranked places</span>
+        <span><i style="background:var(--road);transform:rotate(45deg)"></i>Busy road or industry</span>
+        <span><i style="background:var(--water);border-radius:50%"></i>Your area</span>
+      </div>
+    </div>
+    <section class="grid-wrap" id="gridwrap" aria-labelledby="gridtitle">
+      <div class="grid-head">
+        <h2 id="gridtitle">Every hour, every place</h2>
+        <p>Darker green is better. Striped hours break a safety limit. Pick an hour to see its conditions.</p>
+      </div>
+      <div class="hgrid" id="hgrid"></div>
+      <div class="reading" id="reading"></div>
+    </section>
+  </div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+let here = null, data = null, sel = { v: 0, t: null }, markers = [], sourceMarkers = [];
+
+const map = new maplibregl.Map({
+  container: "map", style: `https://tiles.openfreemap.org/styles/${dark ? "dark" : "positron"}`,
+  center: [78.9, 21.5], zoom: 4.2, attributionControl: { compact: true },
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+new ResizeObserver(() => map.resize()).observe($("#map"));  // layout settles after init; keep canvas in sync
+
+// ---- input ----
+$("#profiles").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true");
+});
+$("#examples").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  $("#q").value = b.textContent; $("#ask").requestSubmit();
+});
+$("#locate").addEventListener("click", () => {
+  const btn = $("#locate");
+  if (!navigator.geolocation) { btn.textContent = "Location not available"; return; }
+  btn.textContent = "Finding you…";
+  navigator.geolocation.getCurrentPosition(
+    (p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; btn.textContent = "Using your location"; btn.setAttribute("aria-pressed", "true"); },
+    () => { here = null; btn.textContent = "Location blocked. Name a place instead"; },
+    { timeout: 10000 });
+});
+$("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask").requestSubmit(); } });
+
+$("#ask").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  let q = $("#q").value.trim(); if (!q) return;
+  const extra = [...document.querySelectorAll("#profiles [aria-pressed=true]")].map((b) => b.dataset.add);
+  if (extra.length) q += " (" + extra.join(", ") + ")";
+  const go = $("#go"); go.disabled = true; go.textContent = "Checking live data…";
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    $("#status").textContent = `Finding places, then checking each hour's weather, air quality and wind. ${Math.round((Date.now() - t0) / 1000)} s`;
+  }, 500);
+  try {
+    const r = await fetch("/ask", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ q, ...(here || {}) }) });
+    if (!r.ok) throw new Error(`The server replied ${r.status}.`);
+    render(await r.json());
+  } catch (err) {
+    $("#result").hidden = true;
+    $("#status").textContent = `Couldn't reach the planner: ${err.message} Check your connection and try again.`;
+  } finally {
+    clearInterval(tick); go.disabled = false; go.textContent = "Find a place and time";
+  }
+});
+
+// ---- rendering ----
+function lines(facts, label) {
+  const l = (facts || "").split("\n").find((x) => x.startsWith(label + ":"));
+  return l ? l.slice(label.length + 1).replace(/\.$/, "").split(/;\s*|,\s(?![^()]*\))/).map((s) => s.trim()).filter(Boolean) : [];
+}
+function avoidItems(res, bestTime) {
+  return res.avoid.filter((a) => a.time !== bestTime).slice(0, 3).map((a) =>
+    `${fmtDay(a.time)}, ${fmtTime(a.time)}: ${a.blocked ? a.reasons[0] : a.reasons.find((r) => r.includes("downwind"))}`);
+}
+const fmtTime = (ts) => new Date(ts).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
+const fmtDay = (ts) => new Date(ts).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+
+function render(res) {
+  data = res;
+  $("#status").textContent = res.status === "ok" ? `Answered in ${res.latency_s} s from data fetched at ${new Date(res.fetched_at).toLocaleTimeString("en-IN")}.` : "";
+  const out = $("#result");
+  if (res.status !== "ok") {
+    out.hidden = false; out.innerHTML = `<p class="summary">${esc(res.answer)}</p>`;
+    $("#q").focus(); clearMap(); $("#gridwrap").style.display = "none"; return;
+  }
+  const recs = res.recommendations, best = recs[0], b = best.best;
+  const [summary] = res.answer.split("\n\nDetails:\n");
+  const caution = res.facts.startsWith("Caution") ? res.facts.split("\n")[0] : null;
+  const alts = recs.slice(1).map((r) => `${esc(r.venue.name)}, ${fmtDay(r.window[0])} ${fmtTime(r.window[0])}–${fmtTime(r.window[1])}${r.best.blocked ? " (also over limits)" : ""}`);
+  const list = (title, items) => items.length ? `<h3>${title}</h3><ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>` : "";
+  out.hidden = false;
+  out.innerHTML = `
+    ${caution ? `<p class="caution">${esc(caution)}</p>` : `<p class="summary">${esc(summary)}</p>`}
+    <div class="pick">
+      <h2>${esc(best.venue.name)}</h2>
+      <p class="when">${fmtDay(best.window[0])}, ${fmtTime(best.window[0])} to ${fmtTime(best.window[1])},
+        ${(best.venue.dist_m / 1000).toFixed(1)} km away${best.travel ? `, about ${best.travel.min} min by road` : ""}</p>
+    </div>
+    <div class="readings">
+      <div><b>${Math.round(b.feels_c)}°C</b><small>Feels like</small></div>
+      <div><b>${b.rain_pct ?? "–"}%</b><small>Rain chance</small></div>
+      <div><b>${Math.round(b.wind_kmh)}</b><small>Wind km/h, ${esc(b.wind_from)}</small></div>
+      <div><b>${b.aqi ?? "–"}</b><small>US AQI</small></div>
+    </div>
+    <div class="lists">${list("Carry", lines(res.facts, "Carry"))}${list("Watch for", lines(res.facts, "Watch for"))}${list("Avoid", avoidItems(res, b.time))}</div>
+    ${alts.length ? `<p class="alts">Also good: ${alts.join("; ")}.</p>` : ""}
+    <details><summary>Where this comes from</summary>
+      <ul class="sources">${Object.values(res.sources).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
+      <p>Understood as: ${esc(res.parsed.activity)}${res.parsed.place ? ` near ${esc(res.parsed.place)}` : ""}${res.parsed.profiles.length ? `, ${esc(res.parsed.profiles.join(", "))}` : ""}. Written by: ${res.writer === "slm" ? "on-device small model, number-checked" : "fixed template"}.</p>
+    </details>`;
+  sel = { v: 0, t: b.time };
+  drawMap(); drawGrid(); select(0, b.time);
+}
+
+function clearMap() {
+  [...markers, ...sourceMarkers].forEach((m) => m.remove()); markers = []; sourceMarkers = [];
+  $("#compass").style.display = "none"; $("#legend").style.display = "none";
+}
+
+function drawMap() {
+  clearMap();
+  const recs = data.recommendations, o = data.origin;
+  const bounds = new maplibregl.LngLatBounds([o.lon, o.lat], [o.lon, o.lat]);
+  const oe = document.createElement("div"); oe.className = "origin"; oe.title = o.name;
+  markers.push(new maplibregl.Marker({ element: oe }).setLngLat([o.lon, o.lat]).addTo(map));
+  recs.forEach((r, i) => {
+    const el = document.createElement("button"); el.className = "marker"; el.textContent = i + 1;
+    el.setAttribute("aria-label", `${i + 1}: ${r.venue.name}`);
+    el.addEventListener("click", () => select(i, sel.t));
+    markers.push(new maplibregl.Marker({ element: el }).setLngLat([r.venue.lon, r.venue.lat])
+      .setPopup(new maplibregl.Popup({ offset: 16 }).setText(`${i + 1}. ${r.venue.name}`)).addTo(map));
+    bounds.extend([r.venue.lon, r.venue.lat]);
+  });
+  map.fitBounds(bounds, { padding: { top: 100, bottom: 50, left: 60, right: 90 }, maxZoom: 14, duration: 900 });
+  $("#legend").style.display = "flex";
+}
+
+function drawSources(i) {
+  sourceMarkers.forEach((m) => m.remove()); sourceMarkers = [];
+  const s = data.recommendations[i].surroundings;
+  [...s.roads, ...s.industry].forEach((x) => {
+    const el = document.createElement("div"); el.className = "source";
+    sourceMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([x.lon, x.lat])
+      .setPopup(new maplibregl.Popup({ offset: 10 }).setText(`${x.name}: ${x.kind}, ${x.dist_m} m from place ${i + 1}`)).addTo(map));
+  });
+}
+
+function color(h) {
+  if (h.blocked) return "";
+  const a = Math.max(0.12, h.score / 100);
+  return `background: color-mix(in srgb, var(--green) ${Math.round(a * 100)}%, var(--cell-empty))`;
+}
+
+function drawGrid() {
+  const recs = data.recommendations;
+  // overnight hours are mostly "after dark" noise; keep 5 am to 10 pm
+  const times = recs[0].hours.map((h) => h.time).filter((t) => { const h = new Date(t).getHours(); return h >= 5 && h < 22; });
+  let head = "<tr><th></th>", days = "<tr><th></th>", lastDay = "";
+  times.forEach((t) => {
+    const d = fmtDay(t), hr = new Date(t).getHours();
+    days += `<th class="day">${d !== lastDay ? esc(d) : ""}</th>`; lastDay = d;
+    head += `<th>${hr % 3 === 0 ? (hr % 12 || 12) + (hr < 12 ? "a" : "p") : ""}</th>`;
+  });
+  const rows = recs.map((r, i) => {
+    const byT = Object.fromEntries(r.hours.map((h) => [h.time, h]));
+    return `<tr><th class="venue" title="${esc(r.venue.name)}">${i + 1}. ${esc(r.venue.name)}</th>` + times.map((t) => {
+      const h = byT[t]; if (!h) return "<td></td>";
+      return `<td><button class="cell${h.blocked ? " blocked" : ""}" style="${color(h)}" data-v="${i}" data-t="${t}"
+        aria-pressed="false" aria-label="${esc(r.venue.name)}, ${fmtDay(t)} ${fmtTime(t)}: ${h.blocked ? "over a limit" : "score " + h.score}"></button></td>`;
+    }).join("") + "</tr>";
+  }).join("");
+  $("#hgrid").innerHTML = `<table>${days}${head}${rows}</table>`;
+  $("#gridwrap").style.display = "block";
+  $("#hgrid").onclick = (e) => { const c = e.target.closest(".cell"); if (c) select(+c.dataset.v, c.dataset.t); };
+}
+
+function select(v, t) {
+  sel = { v, t };
+  const r = data.recommendations[v], h = r.hours.find((x) => x.time === t) || r.best;
+  document.querySelectorAll(".cell").forEach((c) => c.setAttribute("aria-pressed", String(+c.dataset.v === v && c.dataset.t === h.time)));
+  markers.slice(1).forEach((m, i) => m.getElement().classList.toggle("sel", i === v));
+  drawSources(v);
+  // arrow points where the air is going: opposite of where it comes from
+  const deg = COMPASS.indexOf(h.wind_from) * 22.5 + 180;
+  $("#compass").style.display = "flex";
+  $("#compass svg").style.transform = `rotate(${deg}deg)`;
+  $("#windtext").innerHTML = `Wind ${Math.round(h.wind_kmh)} km/h<br>from ${esc(h.wind_from)}, ${fmtTime(h.time)}`;
+  $("#reading").innerHTML = `<b>${esc(r.venue.name)}, ${fmtDay(h.time)} ${fmtTime(h.time)}</b>: feels like ${Math.round(h.feels_c)}°C,
+    rain ${h.rain_pct ?? "–"}%, wind ${Math.round(h.wind_kmh)} km/h from ${esc(h.wind_from)}, AQI ${h.aqi ?? "–"}.
+    ${h.reasons.length ? esc(h.reasons.join("; ")) + "." : ""}`;
+}
+</script>
+</body>
+</html>

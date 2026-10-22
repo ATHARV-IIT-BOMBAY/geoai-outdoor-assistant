@@ -2,11 +2,12 @@
 import asyncio
 import re
 import time
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import data, llm
@@ -171,8 +172,8 @@ async def ask_get(q: str, lat: float | None = None, lon: float | None = None):
 
 
 @app.get("/", include_in_schema=False)
-async def root():
-    return RedirectResponse("/docs")
+async def portal():
+    return FileResponse(Path(__file__).parent / "static" / "index.html")
 
 
 @app.get("/health")
