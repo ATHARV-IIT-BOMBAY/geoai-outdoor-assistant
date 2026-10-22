@@ -1,14 +1,3 @@
----
-title: GeoAI Outdoor Assistant
-emoji: 🌤️
-colorFrom: green
-colorTo: blue
-sdk: docker
-app_port: 7860
-license: apache-2.0
-short_description: Where and when to head outdoors, from live geodata
----
-
 # GeoAI Outdoor Assistant
 
 GeoAI Hackathon 2026 (CSRE, IIT Bombay), PS-01 *"Where & when to head outdoors"*.
@@ -17,13 +6,13 @@ Ask a free-form question such as *"kal subah Bandra mein jogging, mujhe asthma h
 The assistant picks the best nearby place and time window, and says what to carry, what to watch for and which hours to avoid.
 Every fact comes from data fetched live for that question.
 
-- **Live endpoint:** https://atharviitb-geoai-outdoor-assistant.hf.space (interactive docs at `/docs`)
+- **Live endpoint:** https://32-237-40-94.sslip.io (interactive docs at `/docs`)
 - **Model repo:** https://huggingface.co/AtharvIITB/geoai-outdoor-slm
 
 ## API
 
 ```bash
-curl -X POST https://atharviitb-geoai-outdoor-assistant.hf.space/ask \
+curl -X POST https://32-237-40-94.sslip.io/ask \
   -H 'content-type: application/json' \
   -d '{"q": "Best time to go running near Powai tomorrow morning? I have asthma"}'
 ```
@@ -77,7 +66,7 @@ Self-checks: `uv run python -m app.parse`, `-m app.score`, `-m app.llm`.
 - CAMS air-quality forecasts often read high for Indian cities, so many Mumbai and Delhi answers carry a caution.
 - OpenStreetMap coverage varies: some venues are unnamed or mis-tagged, and opening hours or access aren't checked.
 - Travel times come from OSRM driving routes without live traffic.
-- Responses take roughly 10–30 s on the free CPU Space, mostly spent waiting on the public APIs.
+- Responses take roughly 10–30 s on a small CPU server (AWS t4g.small, Sydney), mostly spent waiting on the public APIs.
 
 ## Disclosure
 
