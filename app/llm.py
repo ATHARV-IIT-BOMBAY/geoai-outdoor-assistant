@@ -9,7 +9,10 @@ import threading
 from app.parse import PARTS, WEEKDAYS
 from app.rules import ACTIVITIES, PROFILES
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "models/qwen2.5-3b-instruct-q4_k_m.gguf")
+# Qwen3-1.7B (Apache-2.0, 2.0B params) as Q4_K_M GGUF, mirrored with our model card in MODEL_REPO
+MODEL_REPO = os.environ.get("MODEL_REPO", "AtharvIITB/geoai-outdoor-slm")
+MODEL_FILE = "Qwen3-1.7B-Q4_K_M.gguf"
+MODEL_PATH = os.environ.get("MODEL_PATH", f"models/{MODEL_FILE}")
 DAYS = ["unspecified", "today", "tomorrow", "day after tomorrow", "this weekend", "next week", *WEEKDAYS]
 
 _llm = None
@@ -17,13 +20,20 @@ _lock = threading.Lock()  # llama.cpp contexts aren't thread-safe; one request a
 
 
 def model():
-    """Lazy-load once; None if the weights are missing so the API still works on rules alone."""
+    """Lazy-load once (local file, else from the HF repo); None on failure so the API still works on rules alone."""
     global _llm
-    if _llm is None and os.path.exists(MODEL_PATH):
+    if _llm is None:
         from llama_cpp import Llama
-        _llm = Llama(MODEL_PATH, n_ctx=4096, n_gpu_layers=-1, verbose=False)
-        atexit.register(_llm.close)  # freeing at interpreter teardown trips a Metal assert
-    return _llm
+        kw = dict(n_ctx=4096, n_gpu_layers=-1, verbose=False)
+        try:
+            _llm = (Llama(MODEL_PATH, **kw) if os.path.exists(MODEL_PATH)
+                    else Llama.from_pretrained(MODEL_REPO, MODEL_FILE, **kw))
+        except Exception as e:  # noqa: BLE001 - offline or bad weights: degrade to rules
+            print("model load failed, using rules only:", e)
+            _llm = False
+        else:
+            atexit.register(_llm.close)  # freeing at interpreter teardown trips a Metal assert
+    return _llm or None
 
 
 def _chat(messages, max_tokens, schema=None):
@@ -31,9 +41,10 @@ def _chat(messages, max_tokens, schema=None):
     if m is None:
         return None
     kw = {"response_format": {"type": "json_object", "schema": schema}} if schema else {}
+    messages = [*messages[:-1], {**messages[-1], "content": messages[-1]["content"] + " /no_think"}]  # Qwen3
     with _lock:
         r = m.create_chat_completion(messages=messages, temperature=0, max_tokens=max_tokens, **kw)
-    return r["choices"][0]["message"]["content"]
+    return re.sub(r"<think>.*?</think>", "", r["choices"][0]["message"]["content"], flags=re.S).strip()
 
 
 PARSE_SCHEMA = {
@@ -79,7 +90,7 @@ async def parse_fields(q: str):
 WRITE_PROMPT = (
     "You are an outdoor-activity assistant. Answer the user's QUESTION in 2-3 friendly sentences using only the "
     "FACTS: name the recommended place and its time window and give the main reason. If the facts start with "
-    "'Caution', say that first. Copy numbers, times, dates and place names exactly; never add new ones. "
+    "'Caution', say that first. Copy numbers, times, dates and place names exactly; never add new ones, and never describe facilities. "
     "Reply in English. Plain text, no headings, no lists."
 )
 WORD = re.compile(r"\w+")

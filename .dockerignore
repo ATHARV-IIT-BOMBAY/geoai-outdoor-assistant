@@ -1,0 +1,5 @@
+models/
+.venv/
+__pycache__/
+hf_model/
+.git/

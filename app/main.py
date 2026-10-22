@@ -1,6 +1,7 @@
 """HTTP API: POST /ask {"q": "..."} or GET /ask?q=... -> grounded recommendation + evidence."""
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI
@@ -20,7 +21,13 @@ SOURCES = {
 }
 DEFAULT_ACTIVITY_HINT = ", ".join(a["label"] for a in ACTIVITIES.values())
 
-app = FastAPI(title="GeoAI Outdoor Assistant", version="0.1")
+@asynccontextmanager
+async def lifespan(_):
+    asyncio.create_task(asyncio.to_thread(llm.model))  # warm the SLM without blocking startup
+    yield
+
+
+app = FastAPI(title="GeoAI Outdoor Assistant", version="0.1", lifespan=lifespan)
 
 
 class Ask(BaseModel):
@@ -87,7 +94,7 @@ async def understand(q: str):
         return p
     if not p["activity"] and f["activity"] != "none":
         p["activity"] = f["activity"]
-    p["place"] = f["place"] or p["place"]
+    p["place"] = max(filter(None, (f["place"], p["place"])), key=len, default=None)  # more specific wins
     p["profiles"] = sorted(set(p["profiles"]) | set(f["profiles"]))
     p["radius_km"] = p["radius_km"] or f["radius_km"]
     if not p["time_given"] and (f["day"] != "unspecified" or f["part_of_day"] != "any"):
