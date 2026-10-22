@@ -191,8 +191,9 @@ def score_hour(lim, w, aq, ctx, sun, t, travel_min, venue=None):
         if is_rush(t) and trip >= 20:
             reasons.append(f"about {trip:.0f} min by road at rush hour")
 
-    # blocked hours keep a (heavily cut) score so we can still name the least-bad option
-    return max(0.0, min(100.0, s - 50 * len(blocks))), bool(blocks), blocks + reasons
+    # blocked hours keep a (heavily cut, possibly negative) score, so the least-bad option is the one that
+    # fails by the least, not simply the first hour (clamping at 0 made them all tie)
+    return min(100.0, s - 50 * len(blocks)) if blocks else max(0.0, min(100.0, s)), bool(blocks), blocks + reasons
 
 
 def _next(a, b):
@@ -264,6 +265,11 @@ if __name__ == "__main__":
     nulls = {"apparent_temperature": 30, "precipitation_probability": None, "wind_speed_10m": None, "wind_gusts_10m": None,
              "uv_index": None, "is_day": None, "cloud_cover": None, "wind_direction_10m": None}
     score_hour(lim, nulls, {}, ctx, None, datetime(2026, 10, 23, 7), None)
+    # H4: among blocked hours, two limits broken ranks below one
+    hot = {**nulls, "apparent_temperature": 45, "is_day": 1}
+    hot_dark = {**hot, "is_day": 0}
+    dlim = {**lim, "label": "cricket", "daylight": True}
+    assert score_hour(dlim, hot, {}, ctx, None, rush, None)[0] > score_hour(dlim, hot_dark, {}, ctx, None, rush, None)[0]
     # W3: thunderstorm blocks; low mixing height near a road costs points
     storm = {**nulls, "weather_code": 95, "is_day": 1}
     assert score_hour(lim, storm, {}, ctx, None, rush, None)[1]
