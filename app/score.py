@@ -11,6 +11,7 @@ ROAD_KINDS = ("motorway", "trunk", "primary")
 DOWNWIND_CONE = 45  # degrees either side of the wind's origin
 STAGNANT_BLH_M = 300  # below this mixing height, traffic exhaust lingers near the road whatever the wind does
 NEEDS_FLOODLIGHTS = {"football", "tennis", "cricket"}
+IMPOSSIBLE = re.compile(r"after dark|closed then|thunderstorm")
 
 # India's National AQI (CPCB) breakpoints: (conc lo, conc hi, index lo, index hi). CPCB uses 24-hour means;
 # we apply them to hourly forecasts, which is an approximation (and said so in the README).
@@ -193,7 +194,10 @@ def score_hour(lim, w, aq, ctx, sun, t, travel_min, venue=None):
 
     # blocked hours keep a (heavily cut, possibly negative) score, so the least-bad option is the one that
     # fails by the least, not simply the first hour (clamping at 0 made them all tie)
-    return min(100.0, s - 50 * len(blocks)) if blocks else max(0.0, min(100.0, s)), bool(blocks), blocks + reasons
+    # a risk (rain, heat, air) costs 50; something that rules the activity out (dark, closed, no lights, storm)
+    # costs 150, so "least-bad" is never an impossible hour
+    cut = sum(150 if IMPOSSIBLE.search(b) else 50 for b in blocks)
+    return min(100.0, s - cut) if blocks else max(0.0, min(100.0, s)), bool(blocks), blocks + reasons
 
 
 def _next(a, b):
@@ -270,6 +274,8 @@ if __name__ == "__main__":
     hot_dark = {**hot, "is_day": 0}
     dlim = {**lim, "label": "cricket", "daylight": True}
     assert score_hour(dlim, hot, {}, ctx, None, rush, None)[0] > score_hour(dlim, hot_dark, {}, ctx, None, rush, None)[0]
+    rainy = {**nulls, "precipitation_probability": 45, "is_day": 1}
+    assert score_hour(dlim, rainy, {}, ctx, None, rush, None)[0] > score_hour(dlim, {**nulls, "is_day": 0}, {}, ctx, None, rush, None)[0]
     # W3: thunderstorm blocks; low mixing height near a road costs points
     storm = {**nulls, "weather_code": 95, "is_day": 1}
     assert score_hour(lim, storm, {}, ctx, None, rush, None)[1]
