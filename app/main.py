@@ -24,6 +24,7 @@ SOURCES = {
 }
 HINGLISH = re.compile(r"\b(?:mein|ko|ka|ki|ke|hai|hain|kal|aaj|parso|subah|shaam|raat|dopahar|karna|jana|chahiye|"
                       r"kahan|kab|paas|liye|mujhe|hum|abhi|accha|acha|theek)\b", re.I)
+GENERIC = re.compile(r"\b(?:outside|outdoors?|go out|step out|weather|nice day|bahar)\b", re.I)
 DEFAULT_ACTIVITY_HINT = ", ".join(a["label"] for a in ACTIVITIES.values())
 
 @asynccontextmanager
@@ -115,9 +116,16 @@ async def understand(q: str):
 async def _answer(q: str, lat=None, lon=None):
     t0 = time.perf_counter()
     p = await understand(q)
+    if p["out_of_range"]:
+        return {"status": "clarify", "question": q, "answer": p["out_of_range"]}
+    assumed = None
+    # "is it nice outside" -> assume a walk; "play badminton outdoors" names a sport we don't cover -> ask
+    if not p["activity"] and p["place"] and GENERIC.search(q) and not re.search(r"\bplay(?:ing)?\b", q, re.I):
+        p["activity"], assumed = "walking", "walking"
     if not p["activity"]:
         return {"status": "clarify", "question": q,
-                "answer": f"Which outdoor activity do you have in mind? I can help with: {DEFAULT_ACTIVITY_HINT}."}
+                "answer": "I plan outdoor activities, and couldn't match your question to one I cover. "
+                          f"Which of these is closest: {DEFAULT_ACTIVITY_HINT}?"}
 
     if p["place"]:
         origin = await data.geocode(p["place"])
@@ -148,6 +156,8 @@ async def _answer(q: str, lat=None, lon=None):
     top, avoid = rank(venues, wxs, aqs, ctxs, travels, lim, p["start"], p["end"], p["hour_range"])
     facts = template_answer(p, lim, origin, top, avoid)
     text, writer = await llm.write_answer(q, facts)
+    if assumed:
+        text = f"No activity was named, so I planned for a walk. Name one for a sharper answer.\n\n{text}"
 
     return {
         "status": "ok", "question": q,

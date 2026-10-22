@@ -6,7 +6,9 @@ import time
 import httpx
 
 UA = "geoai-outdoor-assistant/0.1 (GeoAI Hackathon 2026, IIT Bombay)"
-client = httpx.AsyncClient(headers={"User-Agent": UA}, timeout=30, follow_redirects=True)
+# retries cover transient connect failures only (a judged run once hit a ConnectTimeout on a public API)
+client = httpx.AsyncClient(headers={"User-Agent": UA}, timeout=30, follow_redirects=True,
+                           transport=httpx.AsyncHTTPTransport(retries=2))
 
 OVERPASS_MIRRORS = [
     "https://overpass.openstreetmap.fr/api/interpreter",
@@ -57,6 +59,8 @@ def compass(deg):
 
 # ---------- geocoding (Nominatim) ----------
 
+BROAD_AREAS = {"state_district", "county", "state", "region", "country"}
+
 _nominatim_lock = asyncio.Lock()
 _nominatim_last = 0.0
 
@@ -70,13 +74,15 @@ async def geocode(place: str):
                 await asyncio.sleep(wait)
             r = await client.get(
                 "https://nominatim.openstreetmap.org/search",
-                params={"q": place, "format": "jsonv2", "limit": 1, "countrycodes": "in"},
+                params={"q": place, "format": "jsonv2", "limit": 5, "countrycodes": "in"},
             )
             _nominatim_last = time.time()
         r.raise_for_status()
         js = r.json()
         if js:
-            return {"name": js[0]["display_name"], "lat": float(js[0]["lat"]), "lon": float(js[0]["lon"])}
+            # "Thane" also names a district whose centroid is 45 km out in farmland: prefer the settlement
+            best = next((x for x in js if x.get("addresstype") not in BROAD_AREAS), js[0])
+            return {"name": best["display_name"], "lat": float(best["lat"]), "lon": float(best["lon"])}
         # Nominatim is inconsistent on alternate names (Bangalore/Bengaluru); Photon (also OSM data) is better at them
         r = await client.get("https://photon.komoot.io/api/", params={"q": place, "limit": 5})
         feats = [f for f in r.json().get("features", []) if f["properties"].get("countrycode") == "IN"]
@@ -96,7 +102,11 @@ async def overpass(query: str):
     async def one(url):
         r = await client.post(url, data={"data": query}, timeout=45)
         r.raise_for_status()
-        return r.json()["elements"]
+        js = r.json()
+        # overloaded mirrors answer 200 with a "remark" and no elements; that's a failure, not "nothing here"
+        if "error" in js.get("remark", "").lower() or "timed out" in js.get("remark", "").lower():
+            raise ValueError(js["remark"][:80])
+        return js["elements"]
 
     async def fetch():
         tasks = [asyncio.create_task(one(u)) for u in OVERPASS_MIRRORS]

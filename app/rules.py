@@ -91,7 +91,7 @@ ACTIVITIES = {
 
 # Profile adjustments: deltas on activity limits and multipliers on penalties.
 PROFILES = {
-    "asthma": dict(keywords=["asthma", "asthmatic", "breathing", "lung", "copd", "wheez"],
+    "asthma": dict(keywords=["asthma", "asthmatic", "breath", "inhaler", "lung", "copd", "wheez"],
                    aqi_factor=0.6, downwind_mult=2.0, feels_delta=-1,
                    carry=["reliever inhaler"], watch=["pollution peaks near main roads", "dust on windy days"]),
     "senior": dict(keywords=["parents", "senior", "elderly", "old age", "old parents", "grandparent", "grandma", "grandpa",

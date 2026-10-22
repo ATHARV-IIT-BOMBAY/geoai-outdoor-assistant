@@ -93,6 +93,8 @@ WRITE_PROMPT = (
     "'Caution', say that first. Copy numbers, times, dates and place names exactly; never add new ones, never describe facilities, and never say a place is open or closed. "
     "Reply in English. Plain text, no headings, no lists."
 )
+# claims we never check (opening hours, reputation, scenery): a summary making them falls back to the template
+UNVERIFIED = re.compile(r"\b(?:open|opens|closed|popular|famous|beautiful|scenic|stunning|views?|facilit\w*|crowded)\b", re.I)
 WORD = re.compile(r"\w+")
 NUM = re.compile(r"\d+(?:\.\d+)?")
 TIME = re.compile(r"\d{1,2}(?::\d{2})?\s?[AP]M", re.I)
@@ -116,7 +118,7 @@ async def write_answer(q: str, facts: str):
     brief = "\n".join(facts.splitlines()[:3])  # best option, conditions, note: shorter prompt = faster on CPU
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": WRITE_PROMPT},
                                           {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}], 100)
-    if out and grounded(out, facts):
+    if out and grounded(out, facts) and not UNVERIFIED.search(out):
         out = re.sub(r"(\d)\. (\d)", r"\1.\2", out)  # "3. 8 km" -> "3.8 km"
         return f"{out.strip()}\n\nDetails:\n{facts}", "slm"
     return facts, "template"
@@ -125,5 +127,6 @@ async def write_answer(q: str, facts: str):
 if __name__ == "__main__":
     assert grounded("Go at 7:00 AM, feels like 30°C", "7:00 AM ... feels like 30°C")
     assert not grounded("Go at 6:00 AM", "7:00 AM")
+    assert UNVERIFIED.search("It's open from 7 AM") and not UNVERIFIED.search("Go at 7 AM, it's cool and dry")
     assert grounded("Go at 7 am", "7:00 AM") and not grounded("at 12:00 PM", "12:00 AM, 7:00 PM")
     print("ok")
