@@ -12,13 +12,16 @@ UA = "geoai-outdoor-assistant/0.1 (GeoAI Hackathon 2026, IIT Bombay)"
 client = httpx.AsyncClient(headers={"User-Agent": UA}, timeout=30, follow_redirects=True,
                            transport=httpx.AsyncHTTPTransport(retries=2))
 
-OVERPASS_MIRRORS = [
-    "https://overpass.openstreetmap.fr/api/interpreter",
-    "https://overpass-api.de/api/interpreter",
+OVERPASS_MIRRORS = [  # most reliable first; the next one only starts if the previous is slow or fails
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
 ]
+HEDGE_S = 3  # public servers rate-limit per IP: start two, add one more only while they're slow
+# recent seconds per mirror (lower = tried first); mirror speed swings from 2 s to 30 s+ within hours
+_mirror_secs = {u: 5.0 + i for i, u in enumerate(OVERPASS_MIRRORS)}
 
 # ponytail: in-process TTL cache, swap for redis/diskcache if we run >1 worker
 _cache: dict[str, tuple[float, object]] = {}
@@ -92,7 +95,7 @@ def _good(x):
     """A good origin keeps Nominatim's relevance order (famous Andheri before a Punjab village of the same name);
     only districts/states, schools, shops and plain roads are passed over."""
     a, c = x.get("addresstype"), x.get("category")
-    if a in BROAD_AREAS:
+    if a in BROAD_AREAS or c == "highway":  # roads come tagged addresstype "residential" too
         return False
     return a in SETTLEMENTS or c in GOOD_CLASSES or (c == "boundary" and a not in BROAD_AREAS)
 
@@ -110,13 +113,16 @@ async def geocode(place: str):
             )
             _nominatim_last = time.time()
         r.raise_for_status()
-        hits = [x for x in r.json() if _name_match(place, f"{x.get('name', '')} {x['display_name']}", 0.8) >= 0.5]
+        hits = [x for x in r.json() if x.get("category") not in ("shop", "office", "building", "craft")
+                and _name_match(place, f"{x.get('name', '')} {x['display_name']}", 0.8) >= 0.5]
         as_origin = lambda x: {"name": x["display_name"], "lat": float(x["lat"]), "lon": float(x["lon"]),
                                "kind": x.get("addresstype")}
         good = next((x for x in hits if _good(x)), None)
         if good:
             return as_origin(good)
         # a road the user named ("Marine Drive") or a school/state is a fallback, after Photon has had a go
+        named_road = lambda x: x.get("category") != "highway" or _name_match(x.get("name", ""), place, 0.8) >= 1.0
+        hits = [x for x in hits if named_road(x)]  # "London" must not become "London Mission Road"
         best = as_origin(next((x for x in hits if x.get("addresstype") not in BROAD_AREAS), hits[0])) if hits else None
         # Nominatim only offered a school/shop or a whole state, or nothing: Photon (also OSM data) is better at
         # localities and alternate names (Bangalore/Bengaluru, Hinjewadi/Hinjawadi)
@@ -127,6 +133,8 @@ async def geocode(place: str):
                 continue
             if best and pr.get("osm_key") != "place":  # only replace Nominatim's pick with a real locality
                 continue
+            if pr.get("osm_key") == "highway" and _name_match(pr.get("name", ""), place, 0.8) < 1.0:
+                continue  # a road only when the user named the whole road
             name = ", ".join(x for x in (pr.get("name"), pr.get("city") or pr.get("county"), pr.get("state")) if x)
             if _name_match(place, name, 0.65) >= 0.5:
                 lon, lat = f["geometry"]["coordinates"]
@@ -141,6 +149,16 @@ async def geocode(place: str):
 async def overpass(query: str):
     # Public Overpass servers are often at capacity, so race the mirrors and take the first good answer.
     async def one(url):
+        t0 = time.time()
+        try:
+            return await _one(url)
+        except Exception:
+            _mirror_secs[url] += 15  # failing mirrors drift to the back
+            raise
+        finally:
+            _mirror_secs[url] = 0.7 * _mirror_secs[url] + 0.3 * (time.time() - t0)
+
+    async def _one(url):
         r = await client.post(url, data={"data": query}, timeout=45)
         r.raise_for_status()
         js = r.json()
@@ -150,17 +168,23 @@ async def overpass(query: str):
         return js["elements"]
 
     async def fetch():
-        tasks = [asyncio.create_task(one(u)) for u in OVERPASS_MIRRORS]
-        errors = []
+        order = sorted(OVERPASS_MIRRORS, key=_mirror_secs.get)
+        pending, errors, mirrors = {asyncio.create_task(one(order[0]))}, [], iter(order[1:])
         try:
-            for fut in asyncio.as_completed(tasks):
-                try:
-                    return await fut
-                except (httpx.HTTPError, ValueError, KeyError) as e:
-                    errors.append(repr(e)[:80])
-            raise RuntimeError(f"All Overpass mirrors failed: {errors}")
+            while True:
+                nxt = next(mirrors, None)
+                if nxt:
+                    pending.add(asyncio.create_task(one(nxt)))
+                if not pending:
+                    raise RuntimeError(f"All Overpass mirrors failed: {errors}")
+                done, pending = await asyncio.wait(pending, timeout=HEDGE_S if nxt else None,
+                                                   return_when=asyncio.FIRST_COMPLETED)
+                for d in done:
+                    if d.exception() is None:
+                        return d.result()
+                    errors.append(repr(d.exception())[:80])
         finally:
-            for t in tasks:
+            for t in pending:
                 t.cancel()
 
     return await cached(f"op:{hash(query)}", 3600, fetch)
@@ -180,6 +204,14 @@ def _center(el):
     return None
 
 
+CLOSED_ACCESS = {"private", "no", "customers", "members", "permit", "delivery"}
+# OSM features that match a venue tag but aren't somewhere to go ("Trash Collector" was once a photography pick)
+JUNK_NAME = re.compile(r"\b(?:trash|garbage|dump|toilet|washroom|parking|cinema|cinepolis|pvr|inox|multiplex|mall|"
+                       r"hotel|restaurant|bar|atm|bank|petrol|gate|entrance|exit)\b", re.I)
+MAYBE_PRIVATE = re.compile(r"\b(?:school|college|academy|club|society|police|institute|campus|technologies|"
+                           r"pvt|ltd|hospital|cantonment|army|navy|air force|residency|apartments?|tower)\b", re.I)
+
+
 async def venues(lat, lon, radius_m, selectors, limit=8):
     """Named OSM features matching any selector (e.g. '[leisure=park]') within radius, nearest first."""
     body = "".join(f"nwr{s}(around:{radius_m},{lat},{lon});" for s in selectors)
@@ -188,21 +220,26 @@ async def venues(lat, lon, radius_m, selectors, limit=8):
     seen, out = set(), []
     for el in els:
         c = _center(el)
-        name = el.get("tags", {}).get("name:en") or el.get("tags", {}).get("name")
+        tags = el.get("tags", {})
+        name = tags.get("name:en") or tags.get("name")
         if not c or not name or name.lower() in seen:
+            continue
+        if tags.get("access") in CLOSED_ACCESS or JUNK_NAME.search(name):
             continue
         seen.add(name.lower())
         out.append({
-            "name": name, "lat": c[0], "lon": c[1], "tags": el["tags"],
+            "name": name, "lat": c[0], "lon": c[1], "tags": tags,
             "osm": f"{el['type']}/{el['id']}",
             "dist_m": round(haversine_m(lat, lon, *c)),
+            # school/club/campus grounds are often members-only: keep them, but after open places
+            "maybe_private": bool(MAYBE_PRIVATE.search(name)) and tags.get("access") not in ("yes", "public"),
         })
-    out.sort(key=lambda v: v["dist_m"])
+    out.sort(key=lambda v: (v["maybe_private"], v["dist_m"]))
     kept = []  # one pick per site: "Tennis Court 1/2/3" in the same complex are not alternatives
     for v in out:
         if all(haversine_m(v["lat"], v["lon"], k["lat"], k["lon"]) > 150 for k in kept):
             kept.append(v)
-    return kept[:limit]
+    return sorted(kept[:limit], key=lambda v: v["dist_m"])
 
 
 ROAD_R, INDUSTRY_R, WATER_R, GREEN_R = 800, 2500, 1000, 400
@@ -282,7 +319,8 @@ async def surroundings(points):
 # ---------- weather + air quality (Open-Meteo) ----------
 
 HOURLY = ("temperature_2m,apparent_temperature,relative_humidity_2m,precipitation_probability,precipitation,"
-          "wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index,cloud_cover,visibility,is_day")
+          "wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index,cloud_cover,visibility,is_day,"
+          "boundary_layer_height,weather_code,cape")
 AQ_HOURLY = "pm2_5,pm10,us_aqi,nitrogen_dioxide,ozone"
 
 

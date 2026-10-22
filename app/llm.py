@@ -15,35 +15,39 @@ MODEL_FILE = "Qwen3-1.7B-Q4_K_M.gguf"
 MODEL_PATH = os.environ.get("MODEL_PATH", f"models/{MODEL_FILE}")
 DAYS = ["unspecified", "today", "tomorrow", "day after tomorrow", "this weekend", "next week", *WEEKDAYS]
 
-_llm = None
-_lock = threading.Lock()  # llama.cpp contexts aren't thread-safe; one request at a time
+# Two contexts over the same weights (memory-mapped, so loaded once): parse and write prompts each stay
+# cached in their own KV cache instead of evicting each other on every request.
+_llms: dict = {}
+_locks = {"parse": threading.Lock(), "write": threading.Lock()}  # a llama.cpp context isn't thread-safe
 
 
-def model():
-    """Lazy-load once (local file, else from the HF repo); None on failure so the API still works on rules alone."""
-    global _llm
-    if _llm is None:
+def model(kind="parse"):
+    """Lazy-load once per kind (local file, else the HF repo); None on failure so the API still works on rules alone."""
+    if kind not in _llms:
         from llama_cpp import Llama
-        kw = dict(n_ctx=4096, n_gpu_layers=-1, verbose=False)
+        kw = dict(n_ctx=2048, n_gpu_layers=-1, verbose=False)
         try:
-            _llm = (Llama(MODEL_PATH, **kw) if os.path.exists(MODEL_PATH)
-                    else Llama.from_pretrained(MODEL_REPO, MODEL_FILE, **kw))
+            _llms[kind] = (Llama(MODEL_PATH, **kw) if os.path.exists(MODEL_PATH)
+                           else Llama.from_pretrained(MODEL_REPO, MODEL_FILE, **kw))
         except Exception as e:  # noqa: BLE001 - offline or bad weights: degrade to rules
             print("model load failed, using rules only:", e)
-            _llm = False
+            _llms[kind] = False
         else:
-            atexit.register(_llm.close)  # freeing at interpreter teardown trips a Metal assert
-    return _llm or None
+            atexit.register(_llms[kind].close)  # freeing at interpreter teardown trips a Metal assert
+    return _llms[kind] or None
 
 
-def _chat(messages, max_tokens, schema=None):
-    m = model()
-    if m is None:
+def _chat(messages, max_tokens, schema=None, kind="parse", wait=20.0):
+    """One completion, or None if the model is missing or busy for longer than `wait` seconds."""
+    m = model(kind)
+    if m is None or not _locks[kind].acquire(timeout=wait):
         return None
-    kw = {"response_format": {"type": "json_object", "schema": schema}} if schema else {}
-    messages = [*messages[:-1], {**messages[-1], "content": messages[-1]["content"] + " /no_think"}]  # Qwen3
-    with _lock:
+    try:
+        kw = {"response_format": {"type": "json_object", "schema": schema}} if schema else {}
+        messages = [*messages[:-1], {**messages[-1], "content": messages[-1]["content"] + " /no_think"}]  # Qwen3
         r = m.create_chat_completion(messages=messages, temperature=0, max_tokens=max_tokens, **kw)
+    finally:
+        _locks[kind].release()
     return re.sub(r"<think>.*?</think>", "", r["choices"][0]["message"]["content"], flags=re.S).strip()
 
 
@@ -73,7 +77,7 @@ PARSE_PROMPT = (
 
 async def parse_fields(q: str):
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": PARSE_PROMPT},
-                                          {"role": "user", "content": q}], 120, PARSE_SCHEMA)
+                                          {"role": "user", "content": q}], 120, PARSE_SCHEMA, "parse", 20.0)
     if not out:
         return None
     try:
@@ -88,10 +92,14 @@ async def parse_fields(q: str):
 
 
 WRITE_PROMPT = (
-    "You are an outdoor-activity assistant. Answer the user's QUESTION in 2-3 friendly sentences using only the "
-    "FACTS: name the recommended place and its time window and give the main reason. If there is a "
-    "'Comparison' line, start with which day is better. Copy numbers, times, dates and place names exactly; never add new ones, never describe facilities, and never say a place is open or closed. "
-    "Reply in English. Plain text, no headings, no lists."
+    "You are an outdoor-activity assistant. Using only the FACTS, write 1-2 plain sentences that answer the QUESTION: "
+    "say where and when to go and the main reason, with its numbers. If there is a 'Comparison' line, start with which "
+    "day is better. Copy place names, numbers and times exactly as written; add nothing else. Never repeat the "
+    "question, never judge safety or describe the place.\n"
+    "Example. FACTS: Best option: Joggers' Park (1.2 km away), Fri 23 Oct, 6:00 AM – 8:00 AM. "
+    "Why: feels like 27°C, against 34°C at 2:00 PM; 0% rain chance; AQI 85 (Satisfactory).\n"
+    "Answer: Go to Joggers' Park on Fri 23 Oct between 6:00 AM and 8:00 AM, when it feels like 27°C instead of 34°C "
+    "at 2:00 PM, with 0% rain chance and AQI 85."
 )
 # claims we never check (opening hours, reputation, scenery): a summary making them falls back to the template
 UNVERIFIED = re.compile(r"\b(?:open|opens|closed|popular|famous|beautiful|scenic|stunning|views?|facilit\w*|crowded|"
@@ -112,17 +120,28 @@ def _t(x):  # "7 am" / "7:00 AM" -> "7:00AM"
     return x if ":" in x else x[:-2] + ":00" + x[-2:]
 
 
-async def write_answer(q: str, facts: str):
-    """A 2-3 sentence SLM summary of the computed facts, or None (caution answers, or a summary that fails the checks)."""
+def acceptable(out, facts, venue, times, q):
+    """The summary may only restate the facts: right venue, a computed time, no new numbers, no judgement words."""
+    low = out.lower()
+    return (grounded(out, facts) and not UNVERIFIED.search(out) and not low.lstrip().startswith("caution")
+            and venue.lower() in low and any(_t(t) in {_t(x) for x in TIME.findall(out)} for t in times)
+            and not (len(q) > 12 and low.startswith(q.lower()[:20])))
+
+
+async def write_answer(q: str, facts: str, venue: str = "", times=()):
+    """A 1-2 sentence SLM summary of the computed facts, or None (caution answers, a busy model, or failed checks)."""
     lines = facts.splitlines()
     if any(l.startswith("Caution") for l in lines):  # safety warnings stay deterministic; a 3B model once called AQI 156 "safer"
         return None
-    # the core facts only: a shorter prompt is faster on CPU
-    brief = "\n".join(l for l in lines if l.startswith(("Comparison:", "Best option", "At ", "Note:")))
+    brief = "\n".join(l for l in lines if l.startswith(("Comparison:", "Best option", "Why:")))
+    # a busy writer is skipped (the template answer is complete); never queue a request behind it
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": WRITE_PROMPT},
-                                          {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}], 100)
-    if out and grounded(out, facts) and not UNVERIFIED.search(out) and not out.lstrip().lower().startswith("caution"):
-        return re.sub(r"(\d)\. (\d)", r"\1.\2", out).strip()  # "3. 8 km" -> "3.8 km"
+                                          {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}],
+                                  90, None, "write", 1.0)
+    if out:
+        out = re.sub(r"(\d)\. (\d)", r"\1.\2", out).strip()  # "3. 8 km" -> "3.8 km"
+        if acceptable(out, facts, venue, times, q):
+            return out
     return None
 
 
@@ -131,5 +150,11 @@ if __name__ == "__main__":
     assert not grounded("Go at 6:00 AM", "7:00 AM")
     assert UNVERIFIED.search("It's open from 7 AM") and not UNVERIFIED.search("Go at 7 AM, it's cool and dry")
     assert UNVERIFIED.search("MS Building Park is safe for your parents") and UNVERIFIED.search("pleasant weather")
+    facts = "Best option: Lohgad (8.6 km away), Sun 25 Oct, 7:00 AM – 11:00 AM.\nWhy: feels like 20°C; 0% rain chance."
+    assert acceptable("Go to Lohgad on Sun 25 Oct from 7:00 AM, feels like 20°C.", facts, "Lohgad", ["7:00 AM"], "hike?")
+    assert not acceptable("Hike Lohgad day after tomorrow. Go at 7:00 AM.", facts, "Lohgad", ["7:00 AM"],
+                          "hike Lohgad day after tomorrow")  # echoes the question, as seen in the 22 Oct eval
+    assert not acceptable("Go to Rajmachi at 7:00 AM.", facts, "Lohgad", ["7:00 AM"], "hike?")
+    assert not acceptable("Lohgad has pleasant weather at 7:00 AM.", facts, "Lohgad", ["7:00 AM"], "hike?")
     assert grounded("Go at 7 am", "7:00 AM") and not grounded("at 12:00 PM", "12:00 AM, 7:00 PM")
     print("ok")

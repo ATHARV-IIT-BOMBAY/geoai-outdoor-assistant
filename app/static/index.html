@@ -255,14 +255,6 @@ $("#ask").addEventListener("submit", async (e) => {
 });
 
 // ---- rendering ----
-function lines(facts, label) {
-  const l = (facts || "").split("\n").find((x) => x.startsWith(label + ":"));
-  return l ? l.slice(label.length + 1).replace(/\.$/, "").split(/;\s*|,\s(?![^()]*\))/).map((s) => s.trim()).filter(Boolean) : [];
-}
-function avoidItems(res, bestTime) {
-  return res.avoid.filter((a) => a.time !== bestTime).slice(0, 3).map((a) =>
-    `${fmtDay(a.time)}, ${fmtTime(a.time)}: ${a.blocked ? a.reasons[0] : a.reasons.find((r) => r.includes("downwind"))}`);
-}
 const fmtTime = (ts) => new Date(ts).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
 const fmtDay = (ts) => new Date(ts).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
 
@@ -293,9 +285,9 @@ function render(res) {
       <div><b>${Math.round(b.feels_c)}°C</b><small>Feels like</small></div>
       <div><b>${b.rain_pct ?? "–"}%</b><small>Rain chance</small></div>
       <div><b>${b.wind_kmh == null ? "–" : Math.round(b.wind_kmh)}</b><small>Wind km/h${b.wind_from ? ", " + esc(b.wind_from) : ""}</small></div>
-      <div><b>${b.aqi ?? "–"}</b><small>US AQI</small></div>
+      <div><b>${b.aqi ?? "–"}</b><small>AQI${b.aqi_cat ? ", " + esc(b.aqi_cat) : ""}</small></div>
     </div>
-    <div class="lists">${list("Carry", lines(res.facts, "Carry"))}${list("Watch for", lines(res.facts, "Watch for"))}${list("Avoid", avoidItems(res, b.time))}</div>
+    <div class="lists">${list("Carry", res.advice.carry)}${list("Watch for", res.advice.watch)}${list("Avoid", res.advice.avoid)}</div>
     ${alts.length ? `<p class="alts">Also good: ${alts.join("; ")}.</p>` : ""}
     <details><summary>Where this comes from</summary>
       <ul class="sources">${Object.values(res.sources).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
@@ -379,7 +371,7 @@ function select(v, t) {
   $("#compass svg").style.transform = `rotate(${deg}deg)`;
   $("#windtext").innerHTML = `Wind ${Math.round(h.wind_kmh)} km/h<br>from ${esc(h.wind_from)}, ${fmtTime(h.time)}`;
   $("#reading").innerHTML = `<b>${esc(r.venue.name)}, ${fmtDay(h.time)} ${fmtTime(h.time)}</b>: feels like ${Math.round(h.feels_c)}°C,
-    rain ${h.rain_pct ?? "–"}%, wind ${Math.round(h.wind_kmh)} km/h from ${esc(h.wind_from)}, AQI ${h.aqi ?? "–"}.
+    rain ${h.rain_pct ?? "–"}%, wind ${Math.round(h.wind_kmh ?? 0)} km/h${h.wind_from ? " from " + esc(h.wind_from) : ""}, AQI ${h.aqi ?? "–"}${h.aqi_cat ? " (" + esc(h.aqi_cat) + ")" : ""}.
     ${h.reasons.length ? esc(h.reasons.join("; ")) + "." : ""}`;
 }
 </script>
