@@ -94,7 +94,7 @@ PROFILES = {
     "asthma": dict(keywords=["asthma", "asthmatic", "breathing", "lung", "copd", "wheez"],
                    aqi_factor=0.6, downwind_mult=2.0, feels_delta=-1,
                    carry=["reliever inhaler"], watch=["pollution peaks near main roads", "dust on windy days"]),
-    "senior": dict(keywords=["parents", "senior", "elderly", "old", "grandparent", "grandma", "grandpa",
+    "senior": dict(keywords=["parents", "senior", "elderly", "old age", "old parents", "grandparent", "grandma", "grandpa",
                              "grandfather", "grandmother", "aged", "retired"],
                    aqi_factor=0.8, downwind_mult=1.5, feels_delta=-3, uv_delta=-2,
                    carry=["regular medication", "walking stick if used"], watch=["heat exhaustion", "uneven ground"]),

@@ -11,6 +11,8 @@ PARTS = {  # part of day -> (start hour, end hour)
     "early morning": (4, 8), "morning": (5, 12), "afternoon": (12, 16), "evening": (16, 21),
     "tonight": (18, 23), "night": (18, 23), "after work": (17, 21), "sunrise": (5, 8), "sunset": (16, 20),
     "noon": (11, 14),
+    # common Hinglish
+    "subah": (5, 12), "dopahar": (12, 16), "shaam": (16, 21), "raat": (18, 23),
 }
 STOP = (r"this|next|on|tomorrow|today|tonight|for|with|within|after|before|during|around|morning|evening|"
         r"afternoon|night|weekend|" + "|".join(WEEKDAYS) + r"|to|and|i|we|my|is|best|good")
@@ -30,6 +32,10 @@ def parse(q: str, now: datetime | None = None) -> dict:
     acts = {a: _match(t, d["keywords"]) for a, d in ACTIVITIES.items()}
     activity = max(acts, key=lambda a: len(acts[a])) if any(acts.values()) else None
     profiles = [p for p, d in PROFILES.items() if _match(t, d["keywords"])]
+    for age in map(int, re.findall(r"(\d+)[ -]?(?:year|yr)s?[ -]?old", t)):
+        prof = "child" if age < 15 else "senior" if age >= 60 else None
+        if prof and prof not in profiles:
+            profiles.append(prof)
 
     place = None
     for m in PLACE_RE.finditer(q):
@@ -44,9 +50,9 @@ def parse(q: str, now: datetime | None = None) -> dict:
     # ---- day ----
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     day0, ndays = today, 2
-    if "day after tomorrow" in t:
+    if "day after tomorrow" in t or re.search(r"\bparso", t):
         day0, ndays = today + timedelta(days=2), 1
-    elif "tomorrow" in t:
+    elif "tomorrow" in t or re.search(r"\bkal\b", t):
         day0, ndays = today + timedelta(days=1), 1
     elif "weekend" in t:
         sat = today + timedelta(days=(5 - today.weekday()) % 7)
@@ -55,7 +61,7 @@ def parse(q: str, now: datetime | None = None) -> dict:
         day0, ndays = sat, 2
     elif "next week" in t:
         day0, ndays = today + timedelta(days=7 - today.weekday()), 7
-    elif "today" in t or "tonight" in t or "this evening" in t or "this morning" in t:
+    elif "today" in t or re.search(r"\baaj\b", t) or "tonight" in t or "this evening" in t or "this morning" in t:
         day0, ndays = today, 1
     else:
         for i, d in enumerate(WEEKDAYS):
@@ -72,7 +78,8 @@ def parse(q: str, now: datetime | None = None) -> dict:
     start = max(start, now.replace(minute=0, second=0, microsecond=0))
     end = min(end, today + timedelta(days=7))
 
-    return {"activity": activity, "profiles": profiles, "place": place, "radius_km": radius_km,
+    time_given = bool(part) or (day0, ndays) != (today, 2)
+    return {"activity": activity, "profiles": profiles, "place": place, "radius_km": radius_km, "time_given": time_given,
             "start": start, "end": end, "part_of_day": part or None, "hour_range": (h0, h1)}
 
 
@@ -89,4 +96,8 @@ if __name__ == "__main__":
     assert p["start"] == datetime(2026, 10, 24, 16), p
     p = parse("is it a good day for cricket?", now)
     assert p["place"] is None and p["activity"] == "cricket", p
+    assert parse("picnic with my 5 year old in Pune", now)["profiles"] == ["child"]
+    assert parse("walk with my 72-year-old mother in Pune", now)["profiles"] == ["senior"]
+    p = parse("kal shaam Juhu mein cycling", now)
+    assert p["start"] == datetime(2026, 10, 23, 16) and p["end"] == datetime(2026, 10, 23, 21), p
     print("ok")

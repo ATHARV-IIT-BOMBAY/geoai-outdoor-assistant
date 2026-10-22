@@ -84,6 +84,8 @@ def score_hour(lim, w, aq, ctx, sun, t, travel_min):
             reasons.append("golden hour")
         elif not is_day:
             s -= 30
+        else:
+            s -= 15  # flat midday light
         if 20 <= w["cloud_cover"] <= 60:
             s += 5
             reasons.append(f"broken cloud {w['cloud_cover']}%")

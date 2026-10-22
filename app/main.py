@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from app import data
+from app import data, llm
 from app.parse import IST, parse
 from app.rules import ACTIVITIES, limits_for
 from app.score import rank
@@ -78,9 +78,27 @@ async def answer(q: str, lat=None, lon=None):
                 "answer": "A live data source didn't respond properly just now. Please try again in a minute."}
 
 
+async def understand(q: str):
+    """Rules first (reliable on English keywords); the SLM fills what they missed (Hinglish, bare place names)."""
+    p = parse(q)
+    f = await llm.parse_fields(q)
+    p["parser"] = "slm+rules" if f else "rules"
+    if not f:
+        return p
+    if not p["activity"] and f["activity"] != "none":
+        p["activity"] = f["activity"]
+    p["place"] = f["place"] or p["place"]
+    p["profiles"] = sorted(set(p["profiles"]) | set(f["profiles"]))
+    p["radius_km"] = p["radius_km"] or f["radius_km"]
+    if not p["time_given"] and (f["day"] != "unspecified" or f["part_of_day"] != "any"):
+        t = parse(" ".join(x for x in (f["day"], f["part_of_day"]) if x not in ("unspecified", "any")))
+        p.update({k: t[k] for k in ("start", "end", "part_of_day", "hour_range")})
+    return p
+
+
 async def _answer(q: str, lat=None, lon=None):
     t0 = time.perf_counter()
-    p = parse(q)
+    p = await understand(q)
     if not p["activity"]:
         return {"status": "clarify", "question": q,
                 "answer": f"Which outdoor activity do you have in mind? I can help with: {DEFAULT_ACTIVITY_HINT}."}
@@ -112,10 +130,12 @@ async def _answer(q: str, lat=None, lon=None):
         data.surroundings(venues), data.weather(venues, days), data.air_quality(venues, min(days, 5)),
         data.travel(origin, venues))
     top, avoid = rank(venues, wxs, aqs, ctxs, travels, lim, p["start"], p["end"], p["hour_range"])
+    facts = template_answer(p, lim, origin, top, avoid)
+    text, writer = await llm.write_answer(q, facts)
 
     return {
         "status": "ok", "question": q,
-        "answer": template_answer(p, lim, origin, top, avoid),
+        "answer": text, "writer": writer, "facts": facts,
         "parsed": {**p, "start": p["start"].isoformat(), "end": p["end"].isoformat()},
         "origin": origin, "radius_km": radius_km, "limits": {k: lim[k] for k in (
             "feels_max", "rain_max", "wind_max", "gust_max", "aqi_max", "uv_max", "daylight", "downwind_mult")},
