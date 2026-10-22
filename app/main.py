@@ -398,7 +398,7 @@ async def _answer(q: str, lat=None, lon=None):
     else:
         key = next((l for l in facts.splitlines() if l.startswith(("Caution", "Comparison:", "Best option",
                                                                    "Least-bad option", "I couldn't"))), "")
-        summary = " ".join(prefix + [key])
+        summary = " ".join(prefix + [re.sub(r"\s*\[\d+\]", "", key)])  # marks belong to the full answer
         text = "\n".join(prefix[:1] + [facts]) if assumed else facts
 
     return {
