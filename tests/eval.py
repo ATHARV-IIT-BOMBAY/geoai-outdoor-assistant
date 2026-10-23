@@ -54,6 +54,11 @@ def check(case, js, today):
         out["day"] = day_ok(case["day"], p["start"], today)
     if case.get("compare"):
         out["compare"] = len(js.get("comparison") or []) >= 2
+    if case.get("verdict") and js.get("status") == "ok":
+        out["verdict"] = "Verdict:" in (js.get("facts") or "")
+    if "top_near" in case and js.get("status") == "ok":
+        v = ((js.get("recommendations") or [{}])[0]).get("venue") or {}
+        out["named place"] = bool(v) and km((v["lat"], v["lon"]), case["top_near"][:2]) <= case["top_near"][2]
     return out
 
 
@@ -95,7 +100,7 @@ def main():
     pct = lambda q: lat[min(len(lat) - 1, int(q * len(lat)))] if lat else 0
     print(f"\n## Eval {label} ({len(rows)} questions, {today})\n")
     print("| metric | value |\n|---|---|")
-    for name in ("status", "activity", "place", "day", "profiles", "compare"):
+    for name in ("status", "activity", "place", "day", "profiles", "compare", "verdict", "named place"):
         print(f"| {name} correct | {rate(name)} |")
     print(f"| all checks pass | {sum(all(r['checks'].values()) for r in rows)}/{len(rows)} |")
     print(f"| wrong-city answers | {sum(1 for r in rows if r['checks'].get('place') is False)} |")

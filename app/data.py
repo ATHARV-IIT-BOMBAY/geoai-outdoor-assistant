@@ -117,7 +117,8 @@ async def geocode(place: str):
         hits = [x for x in r.json() if x.get("category") not in ("shop", "office", "building", "craft")
                 and _name_match(place, f"{x.get('name', '')} {x['display_name']}", 0.8) >= 0.5]
         as_origin = lambda x: {"name": x["display_name"], "lat": float(x["lat"]), "lon": float(x["lon"]),
-                               "kind": x.get("addresstype")}
+                               "kind": x.get("addresstype"), "category": x.get("category"),
+                               "osm": f"{x.get('osm_type')}/{x.get('osm_id')}"}
         good = next((x for x in hits if _good(x)), None)
         if good:
             return as_origin(good)
@@ -139,7 +140,8 @@ async def geocode(place: str):
             name = ", ".join(x for x in (pr.get("name"), pr.get("city") or pr.get("county"), pr.get("state")) if x)
             if _name_match(place, name, 0.65) >= 0.5:
                 lon, lat = f["geometry"]["coordinates"]
-                return {"name": name, "lat": lat, "lon": lon, "kind": pr.get("type")}
+                osm = f"{ {'N': 'node', 'W': 'way', 'R': 'relation'}.get(pr.get('osm_type'), 'node')}/{pr.get('osm_id')}"
+                return {"name": name, "lat": lat, "lon": lon, "kind": pr.get("type"), "category": pr.get("osm_key"), "osm": osm}
         return best
 
     return await cached(f"geo:{place.lower()}", 86400, fetch)

@@ -247,12 +247,14 @@ def rank(venues, wxs, aqs, ctxs, travels, lim, start, end, hour_range=(0, 24), t
                         "hours": hours, "sun": {d: [a.isoformat(), b.isoformat()] for d, (a, b) in suns.items()}})
 
     results.sort(key=lambda r: (not r["best"]["blocked"], r["best"]["score"]), reverse=True)
-    avoid = []
-    if results:
-        avoid = [h for h in results[0]["hours"] if 5 <= datetime.fromisoformat(h["time"]).hour < 22
-                 and "after dark" not in h["reasons"]
-                 and (h["blocked"] or any("downwind" in r for r in h["reasons"]))]
-    return results[:top], avoid
+    return results[:top], (avoid_hours(results[0]) if results else [])
+
+
+def avoid_hours(rec):
+    """Daytime hours at this place that break a limit or sit downwind of a pollution source."""
+    return [h for h in rec["hours"] if 5 <= datetime.fromisoformat(h["time"]).hour < 22
+            and "after dark" not in h["reasons"]
+            and (h["blocked"] or any("downwind" in r for r in h["reasons"]))]
 
 
 if __name__ == "__main__":

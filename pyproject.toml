@@ -1,7 +1,7 @@
 [project]
 name = "geoai"
 version = "0.1.0"
-description = "Add your description here"
+description = "GeoAI Hackathon 2026 PS-01: where and when to head outdoors, from live geodata and a small language model"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

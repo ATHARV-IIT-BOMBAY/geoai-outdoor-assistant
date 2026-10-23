@@ -1,5 +1,6 @@
 """HTTP API: /ask (GET or POST, many input shapes) -> grounded recommendation + evidence. Serves the portal at /."""
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -12,13 +13,13 @@ from urllib.parse import parse_qsl, quote
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 
 from app import data, llm
 from app.advice import advice, why as why_line
 from app.parse import DEICTIC, IST, parse
 from app.rules import ACTIVITIES, limits_for
-from app.score import rank
+from app.score import avoid_hours, rank
 
 SOURCES = {
     "places": "OpenStreetMap via Overpass API (© OpenStreetMap contributors, ODbL)",
@@ -40,6 +41,14 @@ WRITER_BUDGET_S = 20  # a rewrite (ranking changed after the early summary) only
 REQUEST_DEADLINE_S = 75  # a hung public API must not hang the request
 ANSWER_TTL_S = 600
 _answers: dict = {}
+_progress: contextvars.ContextVar = contextvars.ContextVar("progress", default=None)
+
+
+def _say(msg):
+    """Report a finished stage to a streaming client, if this request has one (GET /ask/stream)."""
+    q = _progress.get()
+    if q is not None:
+        q.put_nowait(msg)
 
 
 @asynccontextmanager
@@ -155,7 +164,25 @@ def plan_advice(p, top, avoid):
             "avoid": [f"{_fmt(a['time'])} ({why(a)})" for a in avoid if a["time"] != h["time"]][:3]}
 
 
-def template_answer(p, lim, origin, top, adv, cmp_line=None, evidence=None):
+YES_NO = re.compile(r"^\s*(?:is|are|will|would|should|shall|can|could|do|does)\b|\b(?:okay|ok|alright|good idea|"
+                    r"good time|good day|safe|worth it|fine)\b", re.I)
+
+
+def verdict_line(q, p, top):
+    """'Verdict: yes / possible, with care / not ideal' for yes-no questions; None otherwise."""
+    if not top or p["compare_days"] or not YES_NO.search(q):
+        return None
+    b, h = top[0], top[0]["best"]
+    when = f"{_fmt(b['window'][0])} – {_hhmm(b['window'][1])} at {b['venue']['name']}"
+    if h["blocked"]:
+        return f"Verdict: not ideal. Every hour you asked about breaks a limit; the main issue is {h['reasons'][0]}."
+    concerns = [r for r in h["reasons"] if r.startswith(("warm", "downwind", "stagnant", "high UV", "storm"))]
+    if h["score"] >= 60 and not concerns:
+        return f"Verdict: yes. {when} works best."
+    return f"Verdict: possible, with care: {when}; watch {concerns[0] if concerns else 'the conditions below'}."
+
+
+def template_answer(p, lim, origin, top, adv, cmp_line=None, evidence=None, verdict=None, named_line=None):
     """Plain-language answer built only from evidence: verdict, where and when, why, what to carry/watch/avoid, data.
     The SLM summarises it; it's also the fallback."""
     items, refs = evidence or ([], {})
@@ -165,13 +192,14 @@ def template_answer(p, lim, origin, top, adv, cmp_line=None, evidence=None):
                                   f"in that time window. Try a different day or a wider area."])
     b = top[0]
     h = b["best"]
-    if cmp_line:
-        lines.append(cmp_line)
+    lines += [x for x in (verdict, cmp_line) if x]
     if h["blocked"]:
         lines.append(f"Caution: no hour in that window meets the safe limits for {lim['label']}"
                      + (f" ({', '.join(p['profiles'])} profile)" if p["profiles"] else "")
                      + f". Main issue: {h['reasons'][0]}. If you still go, this is the least-bad option; "
                        "consider an indoor alternative or another day.")
+    if named_line:
+        lines.append(named_line)
     lines += [f"{'Least-bad' if h['blocked'] else 'Best'} option: {b['venue']['name']} ({b['venue']['dist_m'] / 1000:.1f} km away"
               + (f", ~{b['travel']['min']} min by road" if b["travel"] else "") + "), "
               f"{_fmt(b['window'][0])} – {_hhmm(b['window'][1])}." + _cite(refs, "venue", "travel"),
@@ -223,6 +251,7 @@ async def answer(q: str, lat=None, lon=None):
     key = (" ".join(q.lower().split()), lat and round(lat, 3), lon and round(lon, 3))
     hit = _answers.get(key)
     if hit and hit[0] > time.time():  # judges often ask the same thing twice; data is still fresh for 10 min
+        _say("Answered from data fetched in the last 10 minutes")
         return {**hit[1], "cached": True, "latency_s": round(time.perf_counter() - t0, 2)}
     trace = None
     try:
@@ -299,6 +328,37 @@ async def _resolve_origin(p, q, lat, lon):
     return None, f"Where should I look for {ACTIVITIES[p['activity']]['label']}? Tell me an area or city."
 
 
+PLACE_CATEGORIES = {"leisure", "tourism", "natural", "historic"}  # a park, beach, fort, viewpoint: a place, not an area
+
+
+def _with_named_place(origin, venues):
+    """When the user named a place ("picnic in Cubbon Park"), make sure that place is a candidate: the matching
+    OSM venue if one is within 300 m, else the place itself. Returns (venues, its OSM id or None)."""
+    if origin.get("category") not in PLACE_CATEGORIES:
+        return venues, None
+    near = next((v for v in venues if data.haversine_m(v["lat"], v["lon"], origin["lat"], origin["lon"]) < 300), None)
+    if near:
+        return venues, near["osm"]
+    place = {"name": origin["name"].split(",")[0], "lat": origin["lat"], "lon": origin["lon"], "tags": {},
+             "osm": origin.get("osm") or "named-place", "dist_m": 0, "maybe_private": False}
+    return [place] + venues[:7], place["osm"]
+
+
+def _prefer_named(ranked, named):
+    """Put the named place first unless it is clearly worse; if it is, say how it compares. (ranked, line or None)"""
+    rec = next((r for r in ranked if r["venue"]["osm"] == named), None) if named else None
+    if not rec or rec is ranked[0]:
+        return ranked, None
+    best = ranked[0]
+    if not rec["best"]["blocked"] and rec["best"]["score"] >= best["best"]["score"] - 15:
+        return [rec] + [r for r in ranked if r is not rec], None
+    h = rec["best"]
+    why = h["reasons"][0] if h["reasons"] else f"feels like {_n(h['feels_c'], unit='°C')}"
+    return [best, rec] + [r for r in ranked if r not in (best, rec)], (
+        f"You asked about {rec['venue']['name']}: its best hour is {_fmt(h['time'])} ({why}), "
+        f"but {best['venue']['name']} scores higher, so it comes first.")
+
+
 def _writer_targets(rec):
     """(venue name, times) the summary must mention."""
     return rec["venue"]["name"], [_hhmm(rec["window"][0]), _hhmm(rec["best"]["time"])]
@@ -322,9 +382,13 @@ async def _answer(q: str, lat=None, lon=None):
         return _clarify(q, "I plan outdoor activities, and couldn't match your question to one I cover. "
                            f"Which of these is closest: {DEFAULT_ACTIVITY_HINT}?", p)
 
+    _say(f"Understood: {ACTIVITIES[p['activity']]['label']}"
+         + (f" near {p['place_candidates'][0]}" if p["place_candidates"] else "")
+         + f", {p['start']:%a %d %b %I %p} to {p['end']:%a %I %p}" + (f", {', '.join(p['profiles'])}" if p["profiles"] else ""))
     origin, ask = await _resolve_origin(p, q, lat, lon)
     if not origin:
         return _clarify(q, ask, p)
+    _say(f"Searching around {_short(origin['name'])}")
 
     lim = limits_for(p["activity"], p["profiles"])
     radius_km = p["radius_km"] or lim["radius_km"]
@@ -333,6 +397,7 @@ async def _answer(q: str, lat=None, lon=None):
     if not venues:  # widen once before giving up
         radius_km *= 2.5
         venues = await data.venues(origin["lat"], origin["lon"], int(radius_km * 1000), lim["venues"])
+    venues, named = _with_named_place(origin, venues)
     if not venues:
         text = (f"OpenStreetMap lists no {lim['label']} venues within {radius_km:.0f} km of "
                 f"{_short(origin['name'])}. Try a larger area.")
@@ -341,6 +406,7 @@ async def _answer(q: str, lat=None, lon=None):
 
     days = min(7, max(1, (p["end"] - datetime.now(IST).replace(tzinfo=None)).days + 2))
     tm["venues"] = time.perf_counter() - t0 - sum(tm.values())
+    _say(f"Found {len(venues)} candidate places on OpenStreetMap; fetching their weather, air quality and surroundings")
     ctx_task = asyncio.create_task(data.surroundings(venues))  # the slow one (Overpass): ~10 s
     eo_task = asyncio.create_task(data.earth(venues + [origin]))  # satellite land cover + DEM, alongside it
     wxs, aqs, travels = await asyncio.gather(data.weather(venues, days), data.air_quality(venues, min(days, 5)),
@@ -356,11 +422,17 @@ async def _answer(q: str, lat=None, lon=None):
             early = (pre[0], asyncio.create_task(llm.write_answer(q, pre_facts, *_writer_targets(pre[0]))))
             early[1].add_done_callback(lambda t: t.cancelled() or t.exception())  # unused result: never warn
     tm["weather+air+travel"] = time.perf_counter() - t0 - sum(tm.values())
+    _say("Got the hourly forecast, air quality and travel times; checking roads, industry, water and satellite land cover")
     ctxs = await ctx_task
     eo = await eo_task
     ctxs = [{**c, **e} for c, e in zip(ctxs, eo)]  # new dicts: the cached contexts stay as fetched
     tm["surroundings (after weather)"] = time.perf_counter() - t0 - sum(tm.values())
-    top, avoid = rank(venues, wxs, aqs, ctxs, travels, lim, p["start"], p["end"], p["hour_range"])
+    ranked, avoid = rank(venues, wxs, aqs, ctxs, travels, lim, p["start"], p["end"], p["hour_range"], top=len(venues))
+    _say(f"Scored {len(venues)} places across every hour of your window")
+    ranked, named_line = _prefer_named(ranked, named)
+    top = ranked[:3]
+    if top:
+        avoid = avoid_hours(top[0])
 
     comparison = []
     for d in p["compare_days"]:  # "Saturday or Sunday?": the best of each day, then a verdict
@@ -376,7 +448,7 @@ async def _answer(q: str, lat=None, lon=None):
         top[0]["origin_elev_m"] = eo[-1]["elev_m"]
     adv = plan_advice(p, top, avoid)
     evidence = build_evidence(p, origin, top)
-    facts = template_answer(p, lim, origin, top, adv, cmp_line, evidence)
+    facts = template_answer(p, lim, origin, top, adv, cmp_line, evidence, verdict_line(q, p, top), named_line)
     caution = any(l.startswith("Caution") for l in facts.splitlines())
     core = facts.split("\nEvidence:")[0]  # the writer is checked against facts, not URLs full of numbers
     slm = None
@@ -396,7 +468,7 @@ async def _answer(q: str, lat=None, lon=None):
         summary = " ".join(prefix + [slm])
         text = f"{summary}\n\nDetails:\n{facts}"
     else:
-        key = next((l for l in facts.splitlines() if l.startswith(("Caution", "Comparison:", "Best option",
+        key = next((l for l in facts.splitlines() if l.startswith(("Verdict:", "Caution", "Comparison:", "Best option",
                                                                    "Least-bad option", "I couldn't"))), "")
         summary = " ".join(prefix + [re.sub(r"\s*\[\d+\]", "", key)])  # marks belong to the full answer
         text = "\n".join(prefix[:1] + [facts]) if assumed else facts
@@ -479,6 +551,35 @@ async def ask(request: Request):
     if fmt == "text":
         return PlainTextResponse(res["answer"])
     return res
+
+
+@app.get("/ask/stream")
+async def ask_stream(request: Request):
+    """Same inputs as /ask; streams server-sent events: `progress` (one per finished stage), then `result`."""
+    q, lat, lon, _ = await _inputs(request)
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def run():
+        _progress.set(queue)  # this task's context only
+        res = await answer(q, lat, lon)
+        res["view_url"] = f"{str(request.base_url).rstrip('/')}/?q={quote(q)}"
+        queue.put_nowait(res)
+
+    async def events():
+        task = asyncio.create_task(run())
+        try:
+            while True:
+                item = await queue.get()
+                if isinstance(item, dict):
+                    yield f"event: result\ndata: {json.dumps(item, default=str, ensure_ascii=False)}\n\n"
+                    return
+                yield f"event: progress\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/", include_in_schema=False)

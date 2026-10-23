@@ -7,3 +7,4 @@ hf_model/
 docs/
 logs/
 tests/results/
+.claude/

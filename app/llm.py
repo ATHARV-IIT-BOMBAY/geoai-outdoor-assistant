@@ -94,8 +94,8 @@ async def parse_fields(q: str):
 
 WRITE_PROMPT = (
     "You are an outdoor-activity assistant. Using only the FACTS, write ONE short plain sentence that answers the QUESTION: "
-    "say where and when to go and the main reason, with its numbers. If there is a 'Comparison' line, start with which "
-    "day is better. Copy place names, numbers and times exactly as written; add nothing else. Never repeat the "
+    "say where and when to go and the main reason, with its numbers. If there is a 'Verdict' line, start with its "
+    "answer (yes, possible with care, or not ideal); if there is a 'Comparison' line, start with which day is better. Copy place names, numbers and times exactly as written; add nothing else. Never repeat the "
     "question, never judge safety or describe the place.\n"
     "Example. FACTS: Best option: Joggers' Park (1.2 km away), Fri 23 Oct, 6:00 AM – 8:00 AM. "
     "Why: feels like 27°C, against 34°C at 2:00 PM; 0% rain chance; AQI 85 (Satisfactory).\n"
@@ -134,7 +134,7 @@ async def write_answer(q: str, facts: str, venue: str = "", times=()):
     lines = facts.splitlines()
     if any(l.startswith("Caution") for l in lines):  # safety warnings stay deterministic; a 3B model once called AQI 156 "safer"
         return None
-    brief = "\n".join(re.sub(r"\s*\[\d+\]", "", l) for l in lines if l.startswith(("Comparison:", "Best option", "Why:")))
+    brief = "\n".join(re.sub(r"\s*\[\d+\]", "", l) for l in lines if l.startswith(("Verdict:", "Comparison:", "Best option", "Why:")))
     # a busy writer is skipped (the template answer is complete); never queue a request behind it
     out = await asyncio.to_thread(_chat, [{"role": "system", "content": WRITE_PROMPT},
                                           {"role": "user", "content": f"QUESTION: {q}\n\nFACTS:\n{brief}"}],

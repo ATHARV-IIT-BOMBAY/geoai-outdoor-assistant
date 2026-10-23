@@ -22,6 +22,7 @@ curl -X POST https://32-237-40-94.sslip.io/ask \
 - The question can be sent as `q`, `question`, `query`, `prompt` or `text`: in a JSON body, a form, a plain-text body, or as a GET parameter (up to 500 characters).
 - `lat`/`lon` are optional and used when the question names no place (for example "near me").
 - `format=text` returns just the answer as plain text.
+- `GET /ask/stream?q=...` takes the same inputs and streams server-sent events: one `progress` event per finished stage, then the `result`. The portal uses this to show live steps.
 
 The JSON response contains:
 
@@ -66,10 +67,40 @@ question → parse (rules + SLM, JSON-schema constrained) → geocode → OSM ve
   - Simple opening hours are respected.
 - **Satellite context:** for each place, the assistant reads ESA WorldCover land cover. Tree cover eases the heat penalty, and built-up surroundings add to it. For hikes and rides it reads Copernicus DEM elevation, which gives the climb.
 - **Every claim is cited:** answers mark facts with [n], which point to an `evidence` list. Each entry has a link that reproduces the number: the OSM feature page, the exact Open-Meteo or OSRM query, or the WorldCover or DEM tile.
+- **Answers to the question asked:**
+  - Yes/no questions ("Is it okay to…?") open with a verdict: yes, possible with care, or not ideal.
+  - "Saturday or Sunday?" compares the days.
+  - A named park, fort or beach is rated itself before alternatives.
+  - A window that has already passed ("sunset this evening", asked at night) moves to tomorrow, and the answer says so.
 - **Advice from the data:** each "carry" and "watch for" item comes from the hours you'll actually be out, with its number ("UV up to 9", "rain chance up to 40%", "sunset 6:08 PM"). Every answer shows the place it searched around, why the hour wins, and the data used, with its fetch time.
 - **Grounding guards:** the model's summary is discarded if it contains any number or time not present in the computed facts. Safety cautions are never paraphrased. Places and profiles must come from the user's own words.
 - **Graceful input handling:** a missing activity or place gets a clarifying question. Dates like "tomorrow", "this weekend", "Saturday evening", "after work", "kal shaam" and ages ("5 year old") are understood. If no hour is safe, the assistant names the least-bad option with a clear caution.
 - **Activities (11):** running, cycling, golf, cricket, football, tennis, hiking, walking, picnic, outdoor event, photography.
+
+## Evaluation
+
+`tests/eval_set.py` holds 69 labelled questions:
+- the 10 official examples;
+- typos, Hinglish and Devanagari;
+- missing places or activities;
+- out-of-scope and adversarial inputs;
+- past and far-future dates;
+- health profiles;
+- ambiguous place names.
+
+Labels only say what a correct answer must contain (for example the activity, a place within X km of the right locality, the first planned day, the profiles, or "should ask instead"), never the answer itself. Run it with `python tests/eval.py <base_url> <label>`.
+
+Latest run (23 Oct 2026, on the deployment server):
+
+| Metric | Result |
+|---|---|
+| All checks pass | 68/69 (the miss: "Lalbagh" with no city, which is genuinely ambiguous) |
+| Activity, place, day, profiles, day comparisons | 100% each |
+| Answers in the wrong city | 0 |
+| Errors | 0 |
+| Model-written summary used (normal answers) | 35/47; the rest fall back to the template |
+| Unverifiable claims in model summaries | 0 |
+| Latency (live data, 2 vCPUs) | median 15.9 s, 95th percentile 26.9 s |
 
 ## Model
 
@@ -108,6 +139,10 @@ Self-checks: `uv run python -m app.parse`, `-m app.score`, `-m app.llm`.
 - There is no free live-traffic source. Rush-hour effects on travel time and road exposure are a disclosed heuristic (weekdays 8–11 AM and 5–9 PM), applied to OSRM's free-flow driving times.
 - Green cover counts mapped parks and woods within 400 m; it isn't measured shade.
 - Responses take roughly 15–25 s on a 2-vCPU CPU server (AWS m7i-flex.large, Sydney), mostly spent waiting on the public APIs.
+
+## Licence
+
+Apache-2.0 (see `LICENSE`). Data licences are listed with each source above.
 
 ## Disclosure
 
