@@ -90,17 +90,17 @@ question → parse (rules + SLM, JSON-schema constrained) → geocode → OSM ve
 
 Labels only say what a correct answer must contain (for example the activity, a place within X km of the right locality, the first planned day, the profiles, or "should ask instead"), never the answer itself. Run it with `python tests/eval.py <base_url> <label>`.
 
-Latest run (23 Oct 2026, on the deployment server):
+Final run (23 Oct 2026, against the live production server, on the submitted code):
 
 | Metric | Result |
 |---|---|
 | All checks pass | 68/69 (the miss: "Lalbagh" with no city, which is genuinely ambiguous) |
-| Activity, place, day, profiles, day comparisons | 100% each |
+| Activity, place, day, profiles, day comparisons, verdicts, named places | 100% each |
 | Answers in the wrong city | 0 |
 | Errors | 0 |
-| Model-written summary used (normal answers) | 35/47; the rest fall back to the template |
+| Model-written summary used (normal answers) | 31/42; the rest fall back to the template |
 | Unverifiable claims in model summaries | 0 |
-| Latency (live data, 2 vCPUs) | median 15.9 s, 95th percentile 26.9 s |
+| Latency (live data, 2 vCPUs) | median 17.7 s, 95th percentile 29.1 s |
 
 ## Model
 
