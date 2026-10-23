@@ -13,6 +13,23 @@ UA = "geoai-outdoor-assistant/0.1 (GeoAI Hackathon 2026, IIT Bombay)"
 client = httpx.AsyncClient(headers={"User-Agent": UA}, timeout=30, follow_redirects=True,
                            transport=httpx.AsyncHTTPTransport(retries=2))
 
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+async def get(url, params=None, attempts=3, timeout=30):
+    """GET with retries on transient server errors (a 503 from Open-Meteo once failed a whole answer)."""
+    for i in range(attempts):
+        try:
+            r = await client.get(url, params=params, timeout=timeout)
+            if r.status_code not in RETRY_STATUS or i == attempts - 1:
+                r.raise_for_status()
+                return r
+        except (httpx.TimeoutException, httpx.TransportError):
+            if i == attempts - 1:
+                raise
+        await asyncio.sleep(0.6 * 2 ** i)  # 0.6 s, 1.2 s
+
+
 OVERPASS_MIRRORS = [  # most reliable first; the next one only starts if the previous is slow or fails
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
@@ -108,7 +125,7 @@ async def geocode(place: str):
             wait = 1.0 - (time.time() - _nominatim_last)
             if wait > 0:
                 await asyncio.sleep(wait)
-            r = await client.get(
+            r = await get(
                 "https://nominatim.openstreetmap.org/search",
                 params={"q": place, "format": "jsonv2", "limit": 5, "countrycodes": "in", "accept-language": "en"},
             )
@@ -128,7 +145,7 @@ async def geocode(place: str):
         best = as_origin(next((x for x in hits if x.get("addresstype") not in BROAD_AREAS), hits[0])) if hits else None
         # Nominatim only offered a school/shop or a whole state, or nothing: Photon (also OSM data) is better at
         # localities and alternate names (Bangalore/Bengaluru, Hinjewadi/Hinjawadi)
-        r = await client.get("https://photon.komoot.io/api/", params={"q": place, "limit": 5})
+        r = await get("https://photon.komoot.io/api/", params={"q": place, "limit": 5})
         for f in r.json().get("features", []):
             pr = f["properties"]
             if pr.get("countrycode") != "IN" or pr.get("osm_key") in ("building", "shop", "office"):
@@ -362,7 +379,7 @@ async def weather(points, days=7):
     lats, lons = _multi(points)
 
     async def fetch():
-        r = await client.get("https://api.open-meteo.com/v1/forecast", params={
+        r = await get("https://api.open-meteo.com/v1/forecast", params={
             "latitude": lats, "longitude": lons, "hourly": HOURLY, "daily": "sunrise,sunset",
             "timezone": "Asia/Kolkata", "forecast_days": days})
         r.raise_for_status()
@@ -376,7 +393,7 @@ async def air_quality(points, days=5):
     lats, lons = _multi(points)
 
     async def fetch():
-        r = await client.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
+        r = await get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
             "latitude": lats, "longitude": lons, "hourly": AQ_HOURLY,
             "timezone": "Asia/Kolkata", "forecast_days": days})
         r.raise_for_status()

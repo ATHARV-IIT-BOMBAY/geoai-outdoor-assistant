@@ -359,6 +359,15 @@ def _prefer_named(ranked, named):
         f"but {best['venue']['name']} scores higher, so it comes first.")
 
 
+async def _optional_air(venues, days):
+    """Air quality is important but not essential: if CAMS is down after retries, plan without it (and say so)."""
+    try:
+        return await data.air_quality(venues, days)
+    except Exception as e:  # noqa: BLE001
+        print("air quality unavailable:", repr(e)[:120])
+        return None
+
+
 def _writer_targets(rec):
     """(venue name, times) the summary must mention."""
     return rec["venue"]["name"], [_hhmm(rec["window"][0]), _hhmm(rec["best"]["time"])]
@@ -409,8 +418,11 @@ async def _answer(q: str, lat=None, lon=None):
     _say(f"Found {len(venues)} candidate places on OpenStreetMap; fetching their weather, air quality and surroundings")
     ctx_task = asyncio.create_task(data.surroundings(venues))  # the slow one (Overpass): ~10 s
     eo_task = asyncio.create_task(data.earth(venues + [origin]))  # satellite land cover + DEM, alongside it
-    wxs, aqs, travels = await asyncio.gather(data.weather(venues, days), data.air_quality(venues, min(days, 5)),
+    wxs, aqs, travels = await asyncio.gather(data.weather(venues, days), _optional_air(venues, min(days, 5)),
                                              data.travel(origin, venues))
+    if aqs is None:
+        _say("Air-quality data is unavailable right now; planning without it")
+        aqs = [None] * len(venues)
     # Start the SLM summary now, on a ranking without surroundings, while Overpass works. It is kept only if the
     # final ranking picks the same venue and window and the summary passes the checks against the final facts.
     early = None
@@ -447,6 +459,8 @@ async def _answer(q: str, lat=None, lon=None):
     if top:
         top[0]["origin_elev_m"] = eo[-1]["elev_m"]
     adv = plan_advice(p, top, avoid)
+    if all(a is None for a in aqs):  # say it, so a missing AQI isn't read as clean air
+        adv["watch"].insert(0, "air quality could not be fetched this time; check a local AQI before going")
     evidence = build_evidence(p, origin, top)
     facts = template_answer(p, lim, origin, top, adv, cmp_line, evidence, verdict_line(q, p, top), named_line)
     caution = any(l.startswith("Caution") for l in facts.splitlines())
